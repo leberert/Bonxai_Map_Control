@@ -61,11 +61,15 @@ Incoming 3D point cloud for scan integration. You need to remap this topic to yo
 
 The centers of all occupied voxels as point cloud, useful for visualization. For an accurate visualization, manually change the pointcloud size in Rviz2 to the respective voxel resolution.
 
-## 3.1.3 Parameters
+## 3.1.3 Services
 
 `~reset (std_srvs/srv/Empty)`
 
 Resets the complete map.
+
+`~pause_mapping (std_srvs/srv/SetBool)`
+
+Pauses the complete mapping. "True" pauses the mapping, "False" resumes it.
 
 ## 3.1.4 Parameters
 
@@ -104,6 +108,13 @@ Minimum and maximum height of points to consider for insertion in the callback. 
 `~occupancy_[min|max]_z (float, default: -/+ infinity)`
 
 Minimum and maximum height of occupied cells to be consider in the final map. This ignores all occupied voxels outside of the interval when sending out visualizations and collision maps, but will not affect the actual Bonxai map representation.
+
+`~pause_mapping (bool, default: False for mapping, True for pausing)`
+
+Pauses the complete mapping. "True" pauses the mapping, "False" resumes it.
+
+    ros2 service call /bonxai_server_node/pause_mapping std_srvs/srv/SetBool "{data: true}"
+
 
 ## 3.1.5 Required tf Transforms
 

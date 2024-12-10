@@ -22,6 +22,8 @@
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/color_rgba.hpp"
 #include "std_srvs/srv/empty.hpp"
+#include "std_srvs/srv/set_bool.hpp"
+
 #include "tf2_eigen/tf2_eigen.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/create_timer_ros.h"
@@ -38,11 +40,15 @@ class BonxaiServer : public rclcpp::Node {
   using PCLPointCloud = pcl::PointCloud<pcl::PointXYZ>;
   using BonxaiT = Bonxai::ProbabilisticMap;
   using ResetSrv = std_srvs::srv::Empty;
+  using PauseSrv = std_srvs::srv::SetBool;
 
   explicit BonxaiServer(const rclcpp::NodeOptions& node_options);
 
   bool resetSrv(
       const std::shared_ptr<ResetSrv::Request> req, const std::shared_ptr<ResetSrv::Response> resp);
+
+  bool pauseSrv(
+      const std::shared_ptr<PauseSrv::Request> request, const std::shared_ptr<PauseSrv::Response> response);
 
   virtual void insertCloudCallback(const PointCloud2::ConstSharedPtr cloud);
 
@@ -59,6 +65,7 @@ class BonxaiServer : public rclcpp::Node {
   std::shared_ptr<tf2_ros::MessageFilter<PointCloud2>> tf_point_cloud_sub_;
   // rclcpp::Service<BBoxSrv>::SharedPtr clear_bbox_srv_;
   rclcpp::Service<ResetSrv>::SharedPtr reset_srv_;
+  rclcpp::Service<PauseSrv>::SharedPtr pause_srv_;
   std::shared_ptr<tf2_ros::Buffer> tf2_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf2_listener_;
 

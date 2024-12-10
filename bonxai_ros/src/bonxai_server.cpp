@@ -137,6 +137,10 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   reset_srv_ =
       create_service<ResetSrv>("~/reset", std::bind(&BonxaiServer::resetSrv, this, _1, _2));
 
+  // service to toggle pause_mapping_
+  pause_srv_ = create_service<PauseSrv>("~/pause_mapping", std::bind(&BonxaiServer::pauseSrv, this,
+  _1, _2));
+
   // set parameter callback
   set_param_res_ =
       this->add_on_set_parameters_callback(std::bind(&BonxaiServer::onParameter, this, _1));
@@ -271,6 +275,26 @@ bool BonxaiServer::resetSrv(
 
   return true;
 }
+
+// Service callback to toggle the pause_mapping_ parameter
+bool BonxaiServer::pauseSrv(
+    const std::shared_ptr<PauseSrv::Request> request, const std::shared_ptr<PauseSrv::Response> response) {
+  // Toggle the pause_mapping_ parameter
+  pause_mapping_ = request->data;
+
+  // Log the state and respond
+  if (pause_mapping_) {
+    RCLCPP_INFO(get_logger(), "Mapping paused.");
+    response->message = "Mapping is now paused.";
+  } else {
+    RCLCPP_INFO(get_logger(), "Mapping resumed.");
+    response->message = "Mapping has resumed.";
+  }
+
+  response->success = true;
+  return true;
+}
+
 
 }  // namespace bonxai_server
 
