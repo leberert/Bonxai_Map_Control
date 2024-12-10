@@ -92,6 +92,10 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   prob_max_desc.floating_point_range.push_back(prob_max_range);
   const double thres_max = declare_parameter("sensor_model.max", 0.97, prob_max_desc);
 
+  // pause mapping parameter
+  pause_mapping_ = declare_parameter("pause_mapping", false,
+    rcl_interfaces::msg::ParameterDescriptor().set__description("Pause the mapping process"));
+
   // initialize bonxai object & params
   RCLCPP_INFO(get_logger(), "Voxel resolution %f", res_);
   bonxai_ = std::make_unique<BonxaiT>(res_);
@@ -139,6 +143,11 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
 }
 
 void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud) {
+  if (pause_mapping_) {
+    RCLCPP_INFO(get_logger(), "Mapping is paused. Skipping point cloud processing.");
+    return;
+  }
+
   const auto start_time = rclcpp::Clock{}.now();
 
   PCLPointCloud pc;  // input cloud for filtering and ground-detection
@@ -190,6 +199,8 @@ rcl_interfaces::msg::SetParametersResult BonxaiServer::onParameter(
     const std::vector<rclcpp::Parameter>& parameters) {
   update_param(parameters, "occupancy_min_z", occupancy_min_z_);
   update_param(parameters, "occupancy_max_z", occupancy_max_z_);
+  // update pause mapping param
+  update_param(parameters, "pause_mapping", pause_mapping_);
 
   double sensor_model_min{get_parameter("sensor_model.min").as_double()};
   update_param(parameters, "sensor_model.min", sensor_model_min);
