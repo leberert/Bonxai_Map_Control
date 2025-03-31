@@ -6,6 +6,10 @@
 #include <pcl/filters/passthrough.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/kdtree/kdtree.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 
 #include <algorithm>
 #include <limits>
@@ -23,7 +27,6 @@
 #include "std_msgs/msg/color_rgba.hpp"
 #include "std_srvs/srv/empty.hpp"
 #include "std_srvs/srv/set_bool.hpp"
-
 #include "tf2_eigen/tf2_eigen.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/create_timer_ros.h"
@@ -92,7 +95,14 @@ class BonxaiServer : public rclcpp::Node {
   // pause mapping parameter
   bool pause_mapping_;
 
-
+ private:
+  // New parameters for sparse filter
+  double sparse_filter_radius_{0.5};  // radius to check for neighbors
+  int min_neighbors_{10};             // minimum number of neighbors required
+  double filter_min_height_{2.5};     // Add this line
+  
+  // New function to filter sparse points
+  std::vector<Eigen::Vector3d> filterSparsePoints(const std::vector<Eigen::Vector3d>& points);
 };
 }  // namespace bonxai_server
 

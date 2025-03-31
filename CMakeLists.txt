@@ -18,12 +18,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CONFIG_PATH ${CMAKE_MODULE_PATH}  "${CMAKE_CURRENT_LIST_DIR}/cmake")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CONFIG_PATH}")
 
-find_package(PCL QUIET COMPONENTS common io)
+# Update PCL components
+find_package(PCL REQUIRED COMPONENTS 
+  common 
+  io 
+  kdtree
+)
 
 find_package(benchmark QUIET)
 find_package(octomap QUIET)
 find_package(LZ4 QUIET)
 find_package(Eigen3 QUIET)
+find_package(OpenMP REQUIRED)
 
 #---- Use Address sanitizer if compiled in Debug mode ----
 option(BONXAI_SANITIZE "Add address sanitizer when compiling in Debug mode" OFF)
@@ -60,15 +66,29 @@ if ( ament_cmake_FOUND )
     find_package(ament_cmake_auto REQUIRED)
     ament_auto_find_build_dependencies()
 
-    include_directories(bonxai_ros/include 3rdparty)
+    include_directories(
+      bonxai_ros/include 
+      3rdparty
+      ${PCL_INCLUDE_DIRS}  # Add PCL include directories
+    )
+
+    # Add PCL definitions and flags
+    add_definitions(${PCL_DEFINITIONS})
 
     ament_auto_add_library(bonxai_server SHARED
       bonxai_ros/src/bonxai_server.cpp
     )
 
+    target_compile_options(bonxai_server PRIVATE 
+      -O3 
+      -march=native 
+      ${OpenMP_CXX_FLAGS}
+    )
+
     target_link_libraries(bonxai_server
       bonxai_map
       ${PCL_LIBRARIES}
+      OpenMP::OpenMP_CXX
     )
 
     rclcpp_components_register_node(bonxai_server
