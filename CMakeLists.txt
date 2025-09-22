@@ -18,12 +18,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CONFIG_PATH ${CMAKE_MODULE_PATH}  "${CMAKE_CURRENT_LIST_DIR}/cmake")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CONFIG_PATH}")
 
-# Update PCL components
-find_package(PCL REQUIRED COMPONENTS 
-  common 
-  io 
-  kdtree
-)
+find_package(PCL QUIET COMPONENTS common filters io kdtree)
 
 find_package(benchmark QUIET)
 find_package(octomap QUIET)
@@ -49,7 +44,7 @@ endif()
 add_subdirectory(bonxai_core)
 add_subdirectory(examples)
 
-if(Eigen_FOUND AND PCL_FOUND )
+if(Eigen3_FOUND AND PCL_FOUND )
     add_subdirectory(bonxai_map)
 endif()
 
@@ -65,6 +60,8 @@ if ( ament_cmake_FOUND )
 
     find_package(ament_cmake_auto REQUIRED)
     ament_auto_find_build_dependencies()
+
+    find_package(std_srvs REQUIRED)
 
     include_directories(
       bonxai_ros/include 
@@ -90,6 +87,8 @@ if ( ament_cmake_FOUND )
       ${PCL_LIBRARIES}
       OpenMP::OpenMP_CXX
     )
+
+    ament_target_dependencies(bonxai_server std_srvs)
 
     rclcpp_components_register_node(bonxai_server
       PLUGIN "bonxai_server::BonxaiServer"
