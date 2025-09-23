@@ -158,6 +158,59 @@ It is... complicated.
 If you need to store very sparse point clouds, you should expect Bonxai to use more memory (20-40% more).
 If the point cloud is relatively dense, Bonxai might use less memory than Octomap (less than half).
 
+## ROS 2 Node Parameters (bonxai_ros)
+
+The ROS 2 mapping server node (`bonxai_server_node`) exposes a focused set of parameters (see `bonxai_ros/params/bonxai_params.yaml`) to control spatial resolution, occupancy update probabilities, and a lightweight temporal confirmation filter.
+
+| Parameter | Type | Default | Meaning / Tuning Notes |
+|-----------|------|---------|------------------------|
+| `resolution` | double | 0.02 | Voxel edge length (m). Smaller = more detail, higher memory + CPU. Doubling typically cuts memory/time by ~8× (volume). |
+| `frame_id` | string | `map` | Global fixed frame for published map. Must exist in TF. |
+| `base_frame_id` | string | `base_footprint` | Robot body frame from which sensor data is transformed into `frame_id`. |
+| `occupancy_min_z` | double | -100.0 | Minimum accepted Z (m) in `frame_id`. Tighten (e.g. -1.5) to prune irrelevant vertical regions. |
+| `occupancy_max_z` | double | 100.0 | Maximum accepted Z. Narrow with `occupancy_min_z` (e.g. +3.0) for ground robots to save memory. |
+| `sensor_model.max_range` | double | -1.0 | Ray truncation distance. <0 means use sensor-reported range. Set (e.g. 15.0) to cap freespace carving and speed updates. |
+| `sensor_model.hit` | double (0–1) | 0.7 | Probability for an occupied endpoint (log-odds increment ≈ +0.847). Higher commits obstacles faster but can lock in noise. Typical 0.65–0.75. |
+| `sensor_model.miss` | double (0–1) | 0.4 | Probability for free cells along a ray (<0.5) (log-odds ≈ -0.405). Lower (0.35) clears faster; higher (0.45) preserves thin objects. |
+| `sensor_model.min` | double (0–1) | 0.12 | Lower probability clamp (log-odds ≈ -1.99). Prevents voxels from becoming irreversibly “free”. |
+| `sensor_model.max` | double (0–1) | 0.97 | Upper probability clamp (log-odds ≈ +3.48). Prevents permanent saturation so later freespace can still clear. |
+| `latch` | bool | false | If true, last published map message is latched (late RViz subscribers get immediate state). |
+| `filter.confirm_hits` | int ≥1 | 2 | Required distinct frames a new occupied voxel must be seen before insertion. 1 disables temporal filtering. |
+| `filter.confirm_window` | int (frames) | 30 | Frame window for accumulating confirmations (~3 s @ 10 Hz). Increase for intermittent visibility; decrease for faster emergence. |
+
+Clamping: probabilities are internally converted to log-odds. `hit` adds, `miss` subtracts; `min`/`max` cap the resulting probability enabling state reversibility.
+
+Temporal filtering details and strategy are expanded below in [Filtering "Flying" Points (Temporal Confirmation)](#filtering-flying-points-temporal-confirmation). The table above serves as a quick reference.
+
+Example (defaults):
+
+```yaml
+bonxai_server_node:
+  ros__parameters:
+    resolution: 0.02
+    frame_id: "map"
+    base_frame_id: "base_footprint"
+    occupancy_min_z: -100.0
+    occupancy_max_z: 100.0
+    sensor_model:
+      max_range: -1.0
+      hit: 0.7
+      miss: 0.4
+      min: 0.12
+      max: 0.97
+    latch: false
+    filter:
+      confirm_hits: 2
+      confirm_window: 30
+```
+
+Quick tuning hints:
+
+* Phantom obstacles: lower `hit` (0.65) or raise `confirm_hits` (3).
+* Obstacles appear slowly: reduce `confirm_hits` (1) or slightly raise `hit`.
+* Free space lingers: lower `miss` (0.35) or reduce `sensor_model.max` marginally.
+* Thin poles vanish: raise `miss` (0.45) and keep `confirm_hits` ≤2.
+
 ## Filtering "Flying" Points (Temporal Confirmation)
 
 Real-world depth and LiDAR sensors sometimes produce spurious, isolated returns ("flying" points) caused by multi‑path reflections, dust, rain, or rolling shutter artifacts. Without mitigation, a single noisy hit may create a lone occupied voxel that is never revisited and thus persists indefinitely in the map.
@@ -172,17 +225,6 @@ Bonxai provides a **minimal, low‑overhead temporal confirmation filter** to su
 4. If the required number of hits is **not** reached before `confirm_window` frames elapse, the staged candidate is discarded silently.
 
 If you set `confirm_hits = 1`, staging is bypassed and the filter is effectively disabled (previous behaviour).
-
-### Parameters
-
-YAML namespace: `filter` (see `bonxai_ros/params/bonxai_params.yaml`).
-
-| Parameter | Type | Meaning |
-|-----------|------|---------|
-| `confirm_hits` | integer (>=1) | Number of independent observations required to promote a new voxel. 1 disables the filter. |
-| `confirm_window` | integer (>=1) | Number of map update cycles (typically frames) within which the hits must accumulate. |
-
-Promotion condition (for `confirm_hits > 1`):  hits_for_voxel >= confirm_hits  AND  (last_hit_frame - first_hit_frame) < confirm_window.
 
 ### Choosing Values
 
@@ -212,18 +254,6 @@ The staging buffer only holds candidates awaiting confirmation. Its size is typi
 
 - Thin structures (e.g. wires, masts) are missing until the robot pauses.
 - Fast motion causes legitimate surfaces to be observed only briefly.
-
-### Disabling the Filter
-
-Set `confirm_hits: 1` (the default historically). Leave `confirm_window` unchanged; it is ignored in that mode.
-
-### Example YAML Snippet
-
-```yaml
-filter:
-  confirm_hits: 2        # require two hits before inserting
-  confirm_window: 30     # must occur within 30 frames (~3 s at 10 Hz)
-```
 
 ### Notes
 
