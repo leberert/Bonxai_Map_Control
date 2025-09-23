@@ -2,6 +2,7 @@
 
 #include <eigen3/Eigen/Geometry>
 #include <unordered_set>
+#include <unordered_map>
 
 #include "bonxai/bonxai.hpp"
 
@@ -61,7 +62,16 @@ class ProbabilisticMap {
     int32_t clamp_max_log = logods(0.97f);
 
     int32_t occupancy_threshold_log = logods(0.5);
+
+    // --- Simple filtering to suppress sporadic flying points ---
+    // Require this many observations (hits) before a new voxel becomes occupied.
+    // 1 => accept immediately (disable filtering). Typical values: 2 or 3.
+    uint8_t confirm_hits = 2; // align default with recommended YAML
+    // Maximum number of insert frames between first and last confirming hit.
+    // If exceeded, staged voxel is discarded. 0 => no timeout.
+    uint16_t confirm_window = 30;
   };
+  // end Options struct
 
   static const int32_t UnknownProbability;
 
@@ -127,14 +137,22 @@ class ProbabilisticMap {
   VoxelGrid<CellT> _grid;
   Options _options;
   uint8_t _update_count = 1;
+  uint64_t _frame_counter = 0;  // counts how many insert/update cycles executed
 
   std::vector<CoordT> _miss_coords;
   std::vector<CoordT> _hit_coords;
 
   mutable Bonxai::VoxelGrid<CellT>::Accessor _accessor;
 
+  struct StagingInfo {
+    uint8_t hits = 0;        // how many times observed while staged
+    uint64_t last_seen = 0;  // frame counter when last seen
+  };
+  // Voxels waiting for confirmation
+  std::unordered_map<CoordT, StagingInfo> _staging;
+
   void updateFreeCells(const Vector3D& origin);
-};
+}; // end class ProbabilisticMap
 
 //--------------------------------------------------
 

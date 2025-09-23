@@ -2,11 +2,7 @@
 #define BONXAI_SERVER__BONXAI_SERVER_HPP_
 
 #include <pcl/common/transforms.h>
-#include <pcl/filters/extract_indices.h>
-#include <pcl/filters/passthrough.h>
 #include <pcl/io/pcd_io.h>
-#include <pcl/kdtree/kdtree.h>
-#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
@@ -95,13 +91,9 @@ class BonxaiServer : public rclcpp::Node {
   bool pause_mapping_;
 
  private:
-  // New parameters for sparse filter
-  double sparse_filter_radius_{0.5};  // radius to check for neighbors
-  int min_neighbors_{10};             // minimum number of neighbors required
-  double filter_min_height_{2.5};     // Add this line
-  
-  // New function to filter sparse points
-  std::vector<Eigen::Vector3d> filterSparsePoints(const std::vector<Eigen::Vector3d>& points);
+    // Filtering / robustness parameters (mirrors ProbabilisticMap::Options subset)
+    int filter_confirm_hits_{1};
+    int filter_confirm_window_{30};
 };
 }  // namespace bonxai_server
 

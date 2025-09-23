@@ -96,45 +96,18 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   pause_mapping_ = declare_parameter("pause_mapping", false,
     rcl_interfaces::msg::ParameterDescriptor().set__description("Pause the mapping process"));
 
-  // Add sparse filter parameters
-  rcl_interfaces::msg::ParameterDescriptor sparse_filter_radius_desc;
-  sparse_filter_radius_desc.description = "Radius to check for neighbors when filtering sparse points";
-  sparse_filter_radius_desc.floating_point_range.push_back(
-    rcl_interfaces::msg::FloatingPointRange().set__from_value(0.1).set__to_value(1.0));
-  sparse_filter_radius_ = declare_parameter("sparse_filter_radius", 0.5, sparse_filter_radius_desc);
-
-  rcl_interfaces::msg::ParameterDescriptor min_neighbors_desc;
-  min_neighbors_desc.description = "Minimum number of neighbors required within radius";
-  min_neighbors_desc.integer_range.push_back(
-    rcl_interfaces::msg::IntegerRange().set__from_value(1).set__to_value(50));
-  min_neighbors_ = declare_parameter("min_neighbors", 12, min_neighbors_desc);
-
-  // Add filter height parameter
-  rcl_interfaces::msg::ParameterDescriptor filter_min_height_desc;
-  filter_min_height_desc.description = "Minimum height above which to apply sparse point filtering";
-  filter_min_height_desc.floating_point_range.push_back(
-    rcl_interfaces::msg::FloatingPointRange().set__from_value(0.0).set__to_value(10.0));
-  filter_min_height_ = declare_parameter("filter_min_height", 2.5, filter_min_height_desc);
-
-  // Log sparse filter configuration
-  RCLCPP_INFO(
-      get_logger(),
-      "Sparse filter configuration:\n"
-      "  - Filter radius: %.2f m\n"
-      "  - Minimum neighbors: %d\n"
-      "  - Filter min height: %.2f m\n"
-      "  - Filter max height: %.2f m",
-      sparse_filter_radius_,
-      min_neighbors_,
-      filter_min_height_,
-      occupancy_max_z_);
+  // Simple filtering parameters
+  filter_confirm_hits_ = declare_parameter("filter.confirm_hits", 1);
+  filter_confirm_window_ = declare_parameter("filter.confirm_window", 30);
+  RCLCPP_INFO(get_logger(), "Filter config: confirm_hits=%d confirm_window=%d", filter_confirm_hits_, filter_confirm_window_);
 
   // initialize bonxai object & params
   RCLCPP_INFO(get_logger(), "Voxel resolution %f", res_);
   bonxai_ = std::make_unique<BonxaiT>(res_);
-  BonxaiT::Options options = {
-      bonxai_->logods(prob_miss), bonxai_->logods(prob_hit), bonxai_->logods(thres_min),
-      bonxai_->logods(thres_max)};
+  BonxaiT::Options options = {bonxai_->logods(prob_miss), bonxai_->logods(prob_hit),
+                              bonxai_->logods(thres_min), bonxai_->logods(thres_max)};
+  options.confirm_hits = static_cast<uint8_t>(filter_confirm_hits_);
+  options.confirm_window = static_cast<uint16_t>(filter_confirm_window_);
   bonxai_->setOptions(options);
 
   latched_topics_ = declare_parameter("latch", true);
@@ -255,21 +228,14 @@ rcl_interfaces::msg::SetParametersResult BonxaiServer::onParameter(
   bonxai_->setOptions(options);
 
   bool filter_params_changed = false;
-  filter_params_changed |= update_param(parameters, "sparse_filter_radius", sparse_filter_radius_);
-  filter_params_changed |= update_param(parameters, "min_neighbors", min_neighbors_);
-
+  filter_params_changed |= update_param(parameters, "filter.confirm_hits", filter_confirm_hits_);
+  filter_params_changed |= update_param(parameters, "filter.confirm_window", filter_confirm_window_);
   if (filter_params_changed) {
-    RCLCPP_INFO(
-        get_logger(),
-        "Sparse filter configuration:\n"
-        "  - Filter radius: %.2f m\n"
-        "  - Minimum neighbors: %d\n"
-        "  - Filter min height: %.2f m\n"
-        "  - Filter max height: %.2f m",
-        sparse_filter_radius_,
-        min_neighbors_,
-        filter_min_height_,  // Updated to use parameter
-        occupancy_max_z_);
+    auto opts = bonxai_->options();
+    opts.confirm_hits = static_cast<uint8_t>(filter_confirm_hits_);
+    opts.confirm_window = static_cast<uint16_t>(filter_confirm_window_);
+    bonxai_->setOptions(opts);
+    RCLCPP_INFO(get_logger(), "Updated filter config: confirm_hits=%d confirm_window=%d", filter_confirm_hits_, filter_confirm_window_);
   }
 
   publishAll(now());
@@ -291,9 +257,6 @@ void BonxaiServer::publishAll(const rclcpp::Time& rostime) {
     return;
   }
 
-  // Apply sparse point filter
-  auto filtered_result = filterSparsePoints(bonxai_result);
-
   bool publish_point_cloud =
       (latched_topics_ || point_cloud_pub_->get_subscription_count() +
                                   point_cloud_pub_->get_intra_process_subscription_count() >
@@ -304,7 +267,7 @@ void BonxaiServer::publishAll(const rclcpp::Time& rostime) {
     thread_local pcl::PointCloud<PCLPoint> pcl_cloud;
     pcl_cloud.clear();
 
-    for (const auto& voxel : filtered_result) {  // Use filtered points
+    for (const auto& voxel : bonxai_result) {  // Directly use occupancy filtered at integration
       if (voxel.z() >= occupancy_min_z_ && voxel.z() <= occupancy_max_z_) {
         pcl_cloud.push_back(PCLPoint(voxel.x(), voxel.y(), voxel.z()));
       }
@@ -349,86 +312,6 @@ bool BonxaiServer::pauseSrv(
   return true;
 }
 
-std::vector<Eigen::Vector3d> BonxaiServer::filterSparsePoints(
-    const std::vector<Eigen::Vector3d>& points) {
-  const double MIN_HEIGHT = 2.5;  // Only filter points above 3.0m
-  const size_t BATCH_SIZE = 1000;  // Process points in batches
-
-  // Pre-allocate vectors with reserved capacity
-  std::vector<Eigen::Vector3d> filtered_points;
-  filtered_points.reserve(points.size());
-
-  // Early exit checks
-  if (points.size() < min_neighbors_) {
-    return points;
-  }
-
-  // Static allocation to avoid repeated memory allocation
-  static pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
-  static pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr kdtree(new pcl::KdTreeFLANN<pcl::PointXYZ>);
-  
-  // Pre-filter points by height and reserve space
-  cloud->points.clear();
-  cloud->points.reserve(points.size());
-  
-  // First pass: collect points that need filtering (above MIN_HEIGHT)
-  std::vector<size_t> high_point_indices;
-  high_point_indices.reserve(points.size() / 2);  // Estimate half points need filtering
-  
-  for (size_t i = 0; i < points.size(); ++i) {
-    const auto& p = points[i];
-    if (p.z() >= MIN_HEIGHT && p.z() <= occupancy_max_z_) {
-      cloud->points.emplace_back(p.x(), p.y(), p.z());
-      high_point_indices.push_back(i);
-    } else {
-      // Keep points below MIN_HEIGHT without filtering
-      filtered_points.push_back(p);
-    }
-  }
-
-  // If no high points to filter, return early
-  if (high_point_indices.empty()) {
-    return filtered_points;
-  }
-
-  // Update KD-tree with high points only
-  kdtree->setInputCloud(cloud);
-
-  // Pre-allocate search result vectors
-  std::vector<int> neighbor_indices;
-  std::vector<float> neighbor_distances;
-  neighbor_indices.reserve(min_neighbors_ * 2);
-  neighbor_distances.reserve(min_neighbors_ * 2);
-
-  // Process points in batches for better cache utilization
-  #pragma omp parallel for private(neighbor_indices, neighbor_distances) schedule(dynamic, BATCH_SIZE)
-  for (size_t idx = 0; idx < high_point_indices.size(); ++idx) {
-    const size_t original_idx = high_point_indices[idx];
-    
-    // Early exit radius search once we have minimum neighbors
-    const int neighbors_found = kdtree->radiusSearch(
-      cloud->points[idx],
-      sparse_filter_radius_,
-      neighbor_indices,
-      neighbor_distances,
-      min_neighbors_  // Stop searching after finding minimum required neighbors
-    );
-
-    if (neighbors_found >= min_neighbors_) {
-      #pragma omp critical
-      filtered_points.push_back(points[original_idx]);
-    }
-  }
-
-  RCLCPP_DEBUG(
-    get_logger(),
-    "Filtered %zu sparse points from %zu high points (total: %zu)",
-    high_point_indices.size() - (filtered_points.size() - (points.size() - high_point_indices.size())),
-    high_point_indices.size(),
-    points.size());
-
-  return filtered_points;
-}
 
 }  // namespace bonxai_server
 

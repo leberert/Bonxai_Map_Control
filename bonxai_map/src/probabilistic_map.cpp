@@ -30,11 +30,32 @@ void ProbabilisticMap::setOptions(const Options& options) {
 void ProbabilisticMap::addHitPoint(const Vector3D& point) {
   const auto coord = _grid.posToCoord(point);
   CellT* cell = _accessor.value(coord, true);
+  // If already updated this cycle, skip (prevents double counting)
+  if (cell->update_id == _update_count) {
+    return;
+  }
 
-  if (cell->update_id != _update_count) {
+  const bool already_occupied = cell->probability_log > _options.occupancy_threshold_log;
+
+  if (already_occupied || _options.confirm_hits <= 1) {
     cell->probability_log =
         std::min(cell->probability_log + _options.prob_hit_log, _options.clamp_max_log);
+    cell->update_id = _update_count;
+    _hit_coords.push_back(coord);
+    return;
+  }
 
+  // staged confirmation path
+  auto& st = _staging[coord];
+  if (st.hits == 0) {
+    st.last_seen = _frame_counter;  // first observation
+  }
+  st.hits++;
+  st.last_seen = _frame_counter;
+  if (st.hits >= _options.confirm_hits) {
+    _staging.erase(coord);
+    cell->probability_log =
+        std::min(cell->probability_log + _options.prob_hit_log, _options.clamp_max_log);
     cell->update_id = _update_count;
     _hit_coords.push_back(coord);
   }
@@ -103,6 +124,19 @@ void Bonxai::ProbabilisticMap::updateFreeCells(const Vector3D& origin) {
   if (++_update_count == 4) {
     _update_count = 1;
   }
+  // staging timeout cleanup (optional)
+  if (!_staging.empty() && _options.confirm_window > 0) {
+    const uint64_t frame_limit = _frame_counter - _options.confirm_window;
+    for (auto it = _staging.begin(); it != _staging.end();) {
+      if (it->second.last_seen < frame_limit) {
+        it = _staging.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  // After each full insertion cycle increment frame counter
+  ++_frame_counter;
 }
 
 void ProbabilisticMap::getOccupiedVoxels(std::vector<CoordT>& coords) {

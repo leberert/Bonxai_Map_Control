@@ -157,3 +157,77 @@ It is... complicated.
 
 If you need to store very sparse point clouds, you should expect Bonxai to use more memory (20-40% more).
 If the point cloud is relatively dense, Bonxai might use less memory than Octomap (less than half).
+
+## Filtering "Flying" Points (Temporal Confirmation)
+
+Real-world depth and LiDAR sensors sometimes produce spurious, isolated returns ("flying" points) caused by multi‑path reflections, dust, rain, or rolling shutter artifacts. Without mitigation, a single noisy hit may create a lone occupied voxel that is never revisited and thus persists indefinitely in the map.
+
+Bonxai provides a **minimal, low‑overhead temporal confirmation filter** to suppress these artifacts before they enter the permanent occupancy grid. The mechanism is intentionally simple to keep performance high and configuration surface small.
+
+### How it Works
+
+1. When a new hit falls into a voxel that is not yet allocated, it is placed into a small in‑memory **staging buffer** instead of immediately creating the voxel.
+2. Each subsequent hit to the same (discretized) coordinate increments a counter.
+3. If the counter reaches `confirm_hits` **within** a rolling frame window of length `confirm_window`, the voxel is promoted (allocated + standard occupancy update).
+4. If the required number of hits is **not** reached before `confirm_window` frames elapse, the staged candidate is discarded silently.
+
+If you set `confirm_hits = 1`, staging is bypassed and the filter is effectively disabled (previous behaviour).
+
+### Parameters
+
+YAML namespace: `filter` (see `bonxai_ros/params/bonxai_params.yaml`).
+
+| Parameter | Type | Meaning |
+|-----------|------|---------|
+| `confirm_hits` | integer (>=1) | Number of independent observations required to promote a new voxel. 1 disables the filter. |
+| `confirm_window` | integer (>=1) | Number of map update cycles (typically frames) within which the hits must accumulate. |
+
+Promotion condition (for `confirm_hits > 1`):  hits_for_voxel >= confirm_hits  AND  (last_hit_frame - first_hit_frame) < confirm_window.
+
+### Choosing Values
+
+Rule of thumb: use the *smallest* numbers that reliably suppress your noise.
+
+Suggested starting points:
+
+| Environment / Sensor | `confirm_hits` | `confirm_window` | Rationale |
+|-----------------------|----------------|------------------|-----------|
+| Indoor RGB-D / structured light | 2 | 30 | Light random speckle; fast confirmation. |
+| 16–32 beam LiDAR (moderate noise) | 2 | 30 | Occasional stray beams. |
+| 64+ beam LiDAR outdoors (rain / fog) | 3 | 40–60 | More transient clutter. |
+| Dusty construction / mining | 3–4 | 50–80 | Frequent spurious particles. |
+
+`confirm_window` in seconds ≈ `confirm_window / sensor_fps`. For a 10 Hz sensor and `confirm_window = 30`, candidates have up to ~3 seconds to gather the needed confirmations.
+
+### Performance Impact
+
+The staging buffer only holds candidates awaiting confirmation. Its size is typically a tiny fraction of confirmed voxels. Worst case (heavy, transient clutter) it is bounded by: unique_new_voxels_per_window. Each staged entry is a small struct (counter + first/last frame indices). Memory overhead is usually negligible relative to the voxel grid itself.
+
+### When to Increase Values
+
+- You still see isolated single voxels persisting that correspond to clear sensor noise.
+- The robot sees many one‑off reflections from glass or wet surfaces.
+
+### When to Decrease Values
+
+- Thin structures (e.g. wires, masts) are missing until the robot pauses.
+- Fast motion causes legitimate surfaces to be observed only briefly.
+
+### Disabling the Filter
+
+Set `confirm_hits: 1` (the default historically). Leave `confirm_window` unchanged; it is ignored in that mode.
+
+### Example YAML Snippet
+
+```yaml
+filter:
+  confirm_hits: 2        # require two hits before inserting
+  confirm_window: 30     # must occur within 30 frames (~3 s at 10 Hz)
+```
+
+### Notes
+
+- The filter only gates creation of *new* occupied voxels. Once a voxel exists, ordinary hit/miss log-odds updates apply—no additional confirmation needed.
+- Free space updates (ray casting) still proceed normally through regions containing staged points; staging does not block clearing operations.
+- There is deliberately no spatial neighbor check or connected-component pruning to keep CPU cost minimal; if you later need stronger structural filtering, that can be layered externally.
+

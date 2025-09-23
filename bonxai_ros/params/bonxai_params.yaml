@@ -15,3 +15,8 @@ bonxai_server_node:
       max: 0.97
 
     latch: false
+
+    filter:
+      confirm_hits: 2        # requires 2 hits before inserting
+      confirm_window: 30     # must occur within 30 frames (~3 s at 10 Hz)
+
