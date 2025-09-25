@@ -104,16 +104,16 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   auto adv_deoccupy_frames = declare_parameter("filter.deoccupy_frames", 0);
   auto adv_fractional_hits = declare_parameter("filter.fractional_hits", true);
   RCLCPP_INFO(get_logger(),
-    "Filter config: window_frames=%d required=%d neigh=%d stale=%d deocc=%d fractional=%s",
-    adv_window_frames, adv_required_observations,
-    adv_min_neighbor_support, adv_stale_frames, adv_deoccupy_frames, adv_fractional_hits ? "true" : "false");
+    "Filter config: window_frames=%ld required=%ld neigh=%ld stale=%ld deocc=%ld fractional=%s",
+    static_cast<long>(adv_window_frames), static_cast<long>(adv_required_observations),
+    static_cast<long>(adv_min_neighbor_support), static_cast<long>(adv_stale_frames), static_cast<long>(adv_deoccupy_frames), adv_fractional_hits ? "true" : "false");
 
   // initialize bonxai object & params
   RCLCPP_INFO(get_logger(), "Voxel resolution %f", res_);
   bonxai_ = std::make_unique<BonxaiT>(res_);
   BonxaiT::Options options = {bonxai_->logods(prob_miss), bonxai_->logods(prob_hit),
                               bonxai_->logods(thres_min), bonxai_->logods(thres_max)};
-  options.window_frames = static_cast<uint8_t>(std::clamp(adv_window_frames, 1, 64));
+  options.window_frames = static_cast<uint8_t>(std::clamp<int>(static_cast<int>(adv_window_frames), 1, 64));
   options.required_observations = static_cast<uint8_t>(adv_required_observations);
   options.min_neighbor_support = static_cast<uint8_t>(adv_min_neighbor_support);
   options.stale_frames = static_cast<uint16_t>(adv_stale_frames);
@@ -126,8 +126,8 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
               "Startup params: res=%.3f max_range=%.2f hit=%.2f miss=%.2f clamp=[%.2f..%.2f] "
               "filter{window=%u req=%u neigh=%u stale=%u deocc=%u frac=%s}",
               res_, max_range_, prob_hit, prob_miss, thres_min, thres_max,
-              options.window_frames, options.required_observations, options.min_neighbor_support,
-              options.stale_frames, options.deoccupy_frames, options.fractional_hits ? "on" : "off");
+              static_cast<unsigned>(options.window_frames), static_cast<unsigned>(options.required_observations), static_cast<unsigned>(options.min_neighbor_support),
+              static_cast<unsigned>(options.stale_frames), static_cast<unsigned>(options.deoccupy_frames), options.fractional_hits ? "on" : "off");
 
   latched_topics_ = declare_parameter("latch", true);
   if (latched_topics_) {
