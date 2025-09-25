@@ -115,6 +115,65 @@ Pauses the complete mapping. "True" pauses the mapping, "False" resumes it.
 
     ros2 service call /bonxai_server_node/pause_mapping std_srvs/srv/SetBool "{data: true}"
 
+### 3.1.4.1 Temporal & Spatial Filtering Parameters
+
+To mitigate transient LiDAR artifacts (rain, dust, multi-path “ghost” points) an advanced temporal
+and spatial confirmation system is provided. These replace (but remain backward compatible with)
+the original simple `filter.confirm_hits` / `filter.confirm_window` logic.
+
+`~filter.confirm_hits (int, default: 2)`
+: Legacy alias for minimum observations required. If set > 1 but advanced params are left at
+  defaults, it maps onto `filter.required_observations`.
+
+`~filter.confirm_window (int, default: 30)`
+: Legacy timeout (frames) between first and last observation for staged voxel. Still enforced in
+  addition to advanced timeouts when > 0.
+
+`~filter.window_frames (int, default: 32, range: 1..64)`
+: Size (in map update frames) of the sliding temporal window encoded as a bit-mask per staged voxel.
+
+`~filter.required_observations (int, default: 3)`
+: Number of set bits (unique frames with observations inside `window_frames`) required for
+  promotion to occupied.
+
+`~filter.min_neighbor_support (int, default: 0)`
+: Require at least this many 6-connected neighbours already occupied OR also staged (observed) at
+  promotion time. Use 1–2 to suppress isolated floating points; 0 disables spatial gating.
+
+`~filter.stale_frames (int, default: 64)`
+: If a staged voxel hasn’t been re-observed within this many frames it is discarded.
+
+`~filter.deoccupy_frames (int, default: 0 (disabled))`
+: If > 0, an occupied voxel not reconfirmed within this many frames is gradually decayed toward
+  free (allows clearing dynamic clutter / moving objects).
+
+`~filter.fractional_hits (bool, default: true)`
+: If true, partial log-odds are accumulated while staged so that promotion adds the aggregated value.
+  If false, a single full hit log-odds increment is applied on promotion.
+
+#### Example YAML excerpt
+```yaml
+bonxai_server_node:
+  ros__parameters:
+    filter.confirm_hits: 2            # backward compatible
+    filter.confirm_window: 30
+    filter.window_frames: 32
+    filter.required_observations: 3
+    filter.min_neighbor_support: 1
+    filter.stale_frames: 64
+    filter.deoccupy_frames: 0
+    filter.fractional_hits: true
+```
+
+#### Tuning Guidelines
+* Increase `required_observations` (3→4) for harsher rain filtering.
+* Add `min_neighbor_support: 1` to remove isolated specs while retaining contiguous structures.
+* Reduce `window_frames` if you want faster confirmation (e.g., fast spinning sensor) but balance
+  with potential false positives.
+* Enable `deoccupy_frames` to allow clearing transient obstacles (e.g., moving vehicles) without
+  global reset.
+* Disable `fractional_hits` if you prefer a hard threshold promotion behavior.
+
 
 ## 3.1.5 Required tf Transforms
 

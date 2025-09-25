@@ -37,27 +37,90 @@ void ProbabilisticMap::addHitPoint(const Vector3D& point) {
 
   const bool already_occupied = cell->probability_log > _options.occupancy_threshold_log;
 
-  if (already_occupied || _options.confirm_hits <= 1) {
-    cell->probability_log =
-        std::min(cell->probability_log + _options.prob_hit_log, _options.clamp_max_log);
+  // Fast path: no temporal filtering requested
+  if (_options.required_observations <= 1 || _options.window_frames <= 1) {
+    cell->probability_log = std::min(cell->probability_log + _options.prob_hit_log, _options.clamp_max_log);
     cell->update_id = _update_count;
     _hit_coords.push_back(coord);
+    _last_confirmed_hit[coord] = static_cast<uint32_t>(_frame_counter);
     return;
   }
 
-  // staged confirmation path
-  auto& st = _staging[coord];
-  if (st.hits == 0) {
-    st.last_seen = _frame_counter;  // first observation
-  }
-  st.hits++;
-  st.last_seen = _frame_counter;
-  if (st.hits >= _options.confirm_hits) {
-    _staging.erase(coord);
-    cell->probability_log =
-        std::min(cell->probability_log + _options.prob_hit_log, _options.clamp_max_log);
+  if (already_occupied) {
+    // Update occupancy probability normally and refresh last_confirmed_hit
+    cell->probability_log = std::min(cell->probability_log + _options.prob_hit_log, _options.clamp_max_log);
     cell->update_id = _update_count;
     _hit_coords.push_back(coord);
+    _last_confirmed_hit[coord] = static_cast<uint32_t>(_frame_counter);
+    return;
+  }
+
+  // Staging path with temporal bitmask
+  auto & st = _staging[coord];
+  if (st.first_seen == 0) {
+    st.first_seen = _frame_counter;
+  }
+  st.last_seen = _frame_counter;
+
+  // Shift mask left by one, insert new observation bit at LSB position.
+  // We only keep at most 64 frames of history.
+  if (_options.window_frames >= 64) {
+    st.mask = (st.mask << 1) | 1ULL;
+  } else {
+    const uint64_t mask_limit = (1ULL << _options.window_frames) - 1ULL;
+    st.mask = ((st.mask << 1) | 1ULL) & mask_limit;
+  }
+
+  // Recompute population count (can use builtin if available)
+#if defined(__GNUG__)
+  st.popcnt = static_cast<uint8_t>(__builtin_popcountll(st.mask));
+#else
+  { uint64_t tmp = st.mask; uint8_t c=0; while(tmp){ tmp &= (tmp-1); ++c; } st.popcnt=c; }
+#endif
+
+  // Fractional accumulation (optional)
+  if (_options.fractional_hits) {
+    // Add a fraction of prob_hit_log so cumulative pending equals one full hit after required_observations.
+    st.pending_log = std::min(
+        st.pending_log + (_options.prob_hit_log / std::max<int32_t>(1, _options.required_observations)),
+        _options.prob_hit_log * 4); // clamp fractional accumulation to avoid runaway (heuristic)
+  }
+
+  // Spatial neighbor support (only computed when needed to avoid overhead)
+  bool spatial_ok = (_options.min_neighbor_support == 0);
+  if (!spatial_ok && st.popcnt >= _options.required_observations) {
+    // Evaluate 6-neighborhood
+    static const CoordT dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    uint8_t support = 0;
+    for (const auto & d : dirs) {
+      const CoordT ncoord = coord + d;
+      if (auto* ncell = _accessor.value(ncoord, false)) {
+        if (ncell->probability_log > _options.occupancy_threshold_log) {
+          if (++support >= _options.min_neighbor_support) { spatial_ok = true; break; }
+        }
+      } else {
+        // If neighbor also staging and has at least 1 popcnt treat as weak support
+        auto sit = _staging.find(ncoord);
+        if (sit != _staging.end() && sit->second.popcnt > 0) {
+          if (++support >= _options.min_neighbor_support) { spatial_ok = true; break; }
+        }
+      }
+    }
+    st.neighbor_support = support;
+  }
+
+  // Promotion criteria
+  if (st.popcnt >= _options.required_observations && spatial_ok) {
+    int32_t add_log = _options.fractional_hits ? st.pending_log : _options.prob_hit_log;
+    add_log = std::max<int32_t>(add_log, _options.prob_hit_log); // ensure at least one full hit effect
+    cell->probability_log = std::min(cell->probability_log + add_log, _options.clamp_max_log);
+    cell->update_id = _update_count;
+    _hit_coords.push_back(coord);
+    _last_confirmed_hit[coord] = static_cast<uint32_t>(_frame_counter);
+    _staging.erase(coord);
+  } else {
+    // Not yet promoted; do not push into _hit_coords (so free ray clearing does not originate here yet)
+    cell->update_id = _update_count; // mark touched to avoid multiple staging increments this cycle
   }
 }
 
@@ -124,15 +187,33 @@ void Bonxai::ProbabilisticMap::updateFreeCells(const Vector3D& origin) {
   if (++_update_count == 4) {
     _update_count = 1;
   }
-  // staging timeout cleanup (optional)
-  if (!_staging.empty() && _options.confirm_window > 0) {
-    const uint64_t frame_limit = _frame_counter - _options.confirm_window;
+  // staging timeout & stale cleanup
+  if (!_staging.empty()) {
+    const uint64_t stale_limit = (_options.stale_frames > 0) ? (_frame_counter - _options.stale_frames) : 0;
     for (auto it = _staging.begin(); it != _staging.end();) {
-      if (it->second.last_seen < frame_limit) {
+      if (_options.stale_frames > 0 && it->second.last_seen < stale_limit) {
         it = _staging.erase(it);
       } else {
         ++it;
       }
+    }
+  }
+
+  // Deoccupy decay: optionally apply a miss to cells not recently confirmed
+  if (_options.deoccupy_frames > 0 && !_last_confirmed_hit.empty()) {
+    const uint64_t decay_limit = (_frame_counter > _options.deoccupy_frames) ? (_frame_counter - _options.deoccupy_frames) : 0;
+    for (auto it = _last_confirmed_hit.begin(); it != _last_confirmed_hit.end();) {
+      if (it->second < decay_limit) {
+        if (auto* cell = _accessor.value(it->first, false)) {
+          cell->probability_log = std::max(cell->probability_log + _options.prob_miss_log, _options.clamp_min_log);
+          // If it drops below occupancy threshold we can remove tracking
+          if (cell->probability_log <= _options.occupancy_threshold_log) {
+            it = _last_confirmed_hit.erase(it);
+            continue;
+          }
+        }
+      }
+      ++it;
     }
   }
   // After each full insertion cycle increment frame counter

@@ -96,19 +96,38 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   pause_mapping_ = declare_parameter("pause_mapping", false,
     rcl_interfaces::msg::ParameterDescriptor().set__description("Pause the mapping process"));
 
-  // Simple filtering parameters
-  filter_confirm_hits_ = declare_parameter("filter.confirm_hits", 1);
-  filter_confirm_window_ = declare_parameter("filter.confirm_window", 30);
-  RCLCPP_INFO(get_logger(), "Filter config: confirm_hits=%d confirm_window=%d", filter_confirm_hits_, filter_confirm_window_);
+  // Filtering parameters (advanced only; legacy confirm_* removed)
+  auto adv_window_frames = declare_parameter("filter.window_frames", 32);
+  auto adv_required_observations = declare_parameter("filter.required_observations", 3);
+  auto adv_min_neighbor_support = declare_parameter("filter.min_neighbor_support", 0);
+  auto adv_stale_frames = declare_parameter("filter.stale_frames", 64);
+  auto adv_deoccupy_frames = declare_parameter("filter.deoccupy_frames", 0);
+  auto adv_fractional_hits = declare_parameter("filter.fractional_hits", true);
+  RCLCPP_INFO(get_logger(),
+    "Filter config: window_frames=%d required=%d neigh=%d stale=%d deocc=%d fractional=%s",
+    adv_window_frames, adv_required_observations,
+    adv_min_neighbor_support, adv_stale_frames, adv_deoccupy_frames, adv_fractional_hits ? "true" : "false");
 
   // initialize bonxai object & params
   RCLCPP_INFO(get_logger(), "Voxel resolution %f", res_);
   bonxai_ = std::make_unique<BonxaiT>(res_);
   BonxaiT::Options options = {bonxai_->logods(prob_miss), bonxai_->logods(prob_hit),
                               bonxai_->logods(thres_min), bonxai_->logods(thres_max)};
-  options.confirm_hits = static_cast<uint8_t>(filter_confirm_hits_);
-  options.confirm_window = static_cast<uint16_t>(filter_confirm_window_);
+  options.window_frames = static_cast<uint8_t>(std::clamp(adv_window_frames, 1, 64));
+  options.required_observations = static_cast<uint8_t>(adv_required_observations);
+  options.min_neighbor_support = static_cast<uint8_t>(adv_min_neighbor_support);
+  options.stale_frames = static_cast<uint16_t>(adv_stale_frames);
+  options.deoccupy_frames = static_cast<uint16_t>(adv_deoccupy_frames);
+  options.fractional_hits = adv_fractional_hits;
   bonxai_->setOptions(options);
+
+  // Concise startup summary of key parameters
+  RCLCPP_INFO(get_logger(),
+              "Startup params: res=%.3f max_range=%.2f hit=%.2f miss=%.2f clamp=[%.2f..%.2f] "
+              "filter{window=%u req=%u neigh=%u stale=%u deocc=%u frac=%s}",
+              res_, max_range_, prob_hit, prob_miss, thres_min, thres_max,
+              options.window_frames, options.required_observations, options.min_neighbor_support,
+              options.stale_frames, options.deoccupy_frames, options.fractional_hits ? "on" : "off");
 
   latched_topics_ = declare_parameter("latch", true);
   if (latched_topics_) {
@@ -228,14 +247,32 @@ rcl_interfaces::msg::SetParametersResult BonxaiServer::onParameter(
   bonxai_->setOptions(options);
 
   bool filter_params_changed = false;
-  filter_params_changed |= update_param(parameters, "filter.confirm_hits", filter_confirm_hits_);
-  filter_params_changed |= update_param(parameters, "filter.confirm_window", filter_confirm_window_);
+  int tmp_window_frames = get_parameter("filter.window_frames").as_int();
+  filter_params_changed |= update_param(parameters, "filter.window_frames", tmp_window_frames);
+  int tmp_required_obs = get_parameter("filter.required_observations").as_int();
+  filter_params_changed |= update_param(parameters, "filter.required_observations", tmp_required_obs);
+  int tmp_min_neigh = get_parameter("filter.min_neighbor_support").as_int();
+  filter_params_changed |= update_param(parameters, "filter.min_neighbor_support", tmp_min_neigh);
+  int tmp_stale_frames = get_parameter("filter.stale_frames").as_int();
+  filter_params_changed |= update_param(parameters, "filter.stale_frames", tmp_stale_frames);
+  int tmp_deocc_frames = get_parameter("filter.deoccupy_frames").as_int();
+  filter_params_changed |= update_param(parameters, "filter.deoccupy_frames", tmp_deocc_frames);
+  bool tmp_fractional = get_parameter("filter.fractional_hits").as_bool();
+  filter_params_changed |= update_param(parameters, "filter.fractional_hits", tmp_fractional);
+
   if (filter_params_changed) {
     auto opts = bonxai_->options();
-    opts.confirm_hits = static_cast<uint8_t>(filter_confirm_hits_);
-    opts.confirm_window = static_cast<uint16_t>(filter_confirm_window_);
+    opts.window_frames = static_cast<uint8_t>(std::clamp(tmp_window_frames, 1, 64));
+    opts.required_observations = static_cast<uint8_t>(tmp_required_obs);
+    opts.min_neighbor_support = static_cast<uint8_t>(tmp_min_neigh);
+    opts.stale_frames = static_cast<uint16_t>(tmp_stale_frames);
+    opts.deoccupy_frames = static_cast<uint16_t>(tmp_deocc_frames);
+    opts.fractional_hits = tmp_fractional;
     bonxai_->setOptions(opts);
-    RCLCPP_INFO(get_logger(), "Updated filter config: confirm_hits=%d confirm_window=%d", filter_confirm_hits_, filter_confirm_window_);
+    RCLCPP_INFO(get_logger(),
+      "Updated filter config: window_frames=%d required=%d neigh=%d stale=%d deocc=%d fractional=%s",
+      opts.window_frames, opts.required_observations,
+      opts.min_neighbor_support, opts.stale_frames, opts.deoccupy_frames, opts.fractional_hits ? "true" : "false");
   }
 
   publishAll(now());

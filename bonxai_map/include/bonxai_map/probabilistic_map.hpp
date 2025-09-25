@@ -64,12 +64,24 @@ class ProbabilisticMap {
     int32_t occupancy_threshold_log = logods(0.5);
 
     // --- Simple filtering to suppress sporadic flying points ---
-    // Require this many observations (hits) before a new voxel becomes occupied.
-    // 1 => accept immediately (disable filtering). Typical values: 2 or 3.
-    uint8_t confirm_hits = 2; // align default with recommended YAML
-    // Maximum number of insert frames between first and last confirming hit.
-    // If exceeded, staged voxel is discarded. 0 => no timeout.
-    uint16_t confirm_window = 30;
+  // Legacy confirmation parameters removed (confirm_hits, confirm_window) in favor of
+  // advanced temporal/spatial filtering below.
+
+    // --- Advanced temporal / spatial filtering ---
+    // Sliding window (in frames) over which observations are remembered using a bit-mask
+    // Valid range: 1..64 (implementation currently uses 64-bit mask)
+    uint8_t window_frames = 32;
+    // Number of observations (bits set in mask) required to promote to occupied
+    uint8_t required_observations = 3;
+    // Minimum number of already occupied or staging neighbours (6-connectivity) required
+    // to allow promotion. 0 disables spatial support requirement.
+    uint8_t min_neighbor_support = 0;
+    // Frames after last observation before staged voxel is abandoned (>= window_frames advisable).
+    uint16_t stale_frames = 64;
+    // Frames since last confirmed hit after which an occupied voxel will start to decay (0 disables).
+    uint16_t deoccupy_frames = 0;
+    // If true distribute probability addition fractionally while staged; else apply full on promotion.
+    bool fractional_hits = true;
   };
   // end Options struct
 
@@ -145,9 +157,15 @@ class ProbabilisticMap {
   mutable Bonxai::VoxelGrid<CellT>::Accessor _accessor;
 
   struct StagingInfo {
-    uint8_t hits = 0;        // how many times observed while staged
-    uint64_t last_seen = 0;  // frame counter when last seen
+    uint64_t mask = 0;        // bit mask of most recent observations (LSB = current frame)
+    uint8_t popcnt = 0;       // cached population count of mask
+    uint64_t first_seen = 0;  // frame when first observed
+    uint64_t last_seen = 0;   // frame when last observed
+    uint8_t neighbor_support = 0; // number of supporting neighbours when last computed
+    int32_t pending_log = 0;  // accumulated fractional log-odds (fixed precision like probability_log)
   };
+  // Track last observation for confirmed voxels (for decay). We store compact uint32 frames.
+  std::unordered_map<CoordT, uint32_t> _last_confirmed_hit;
   // Voxels waiting for confirmation
   std::unordered_map<CoordT, StagingInfo> _staging;
 

@@ -91,9 +91,7 @@ class BonxaiServer : public rclcpp::Node {
   bool pause_mapping_;
 
  private:
-    // Filtering / robustness parameters (mirrors ProbabilisticMap::Options subset)
-    int filter_confirm_hits_{1};
-    int filter_confirm_window_{30};
+     // (Legacy filtering parameters removed; advanced filtering configured via direct parameters)
 };
 }  // namespace bonxai_server
 

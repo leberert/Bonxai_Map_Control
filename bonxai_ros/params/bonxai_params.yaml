@@ -17,6 +17,10 @@ bonxai_server_node:
     latch: false
 
     filter:
-      confirm_hits: 2        # requires 2 hits before inserting
-      confirm_window: 30     # must occur within 30 frames (~3 s at 10 Hz)
+      window_frames: 32      # size of sliding temporal window (frames, 1..64)
+      required_observations: 3  # bits (distinct frames) required within window for promotion
+      min_neighbor_support: 1   # require this many occupied/staged neighbors (0 disables spatial gating)
+      stale_frames: 64       # drop staged voxel if not re-seen within this many frames
+      deoccupy_frames: 0     # if >0, decay occupied voxels not reconfirmed within this many frames
+      fractional_hits: true  # accumulate fractional log-odds while staged before promotion
 
