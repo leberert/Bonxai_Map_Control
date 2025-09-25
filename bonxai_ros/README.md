@@ -118,16 +118,7 @@ Pauses the complete mapping. "True" pauses the mapping, "False" resumes it.
 ### 3.1.4.1 Temporal & Spatial Filtering Parameters
 
 To mitigate transient LiDAR artifacts (rain, dust, multi-path “ghost” points) an advanced temporal
-and spatial confirmation system is provided. These replace (but remain backward compatible with)
-the original simple `filter.confirm_hits` / `filter.confirm_window` logic.
-
-`~filter.confirm_hits (int, default: 2)`
-: Legacy alias for minimum observations required. If set > 1 but advanced params are left at
-  defaults, it maps onto `filter.required_observations`.
-
-`~filter.confirm_window (int, default: 30)`
-: Legacy timeout (frames) between first and last observation for staged voxel. Still enforced in
-  addition to advanced timeouts when > 0.
+and spatial confirmation system is provided. 
 
 `~filter.window_frames (int, default: 32, range: 1..64)`
 : Size (in map update frames) of the sliding temporal window encoded as a bit-mask per staged voxel.
@@ -155,8 +146,6 @@ the original simple `filter.confirm_hits` / `filter.confirm_window` logic.
 ```yaml
 bonxai_server_node:
   ros__parameters:
-    filter.confirm_hits: 2            # backward compatible
-    filter.confirm_window: 30
     filter.window_frames: 32
     filter.required_observations: 3
     filter.min_neighbor_support: 1
@@ -173,6 +162,29 @@ bonxai_server_node:
 * Enable `deoccupy_frames` to allow clearing transient obstacles (e.g., moving vehicles) without
   global reset.
 * Disable `fractional_hits` if you prefer a hard threshold promotion behavior.
+
+#### Quick Reference Cheat Sheet
+| Goal | Suggested Changes | Notes |
+|------|-------------------|-------|
+| Suppress rain/dust speckles | required_observations=4, min_neighbor_support=1 | Slightly slower confirmation |
+| Very fast confirmation (indoors) | window_frames=16, required_observations=2 | Higher risk of ghost points |
+| Keep map clean of moving pallets | deoccupy_frames=120 (≈12s @10Hz) | Combine with min_neighbor_support=1 |
+| Preserve static structure aggressively | fractional_hits=true, required_observations=3 | Balanced default |
+| Eliminate isolated artifacts only | min_neighbor_support=1, required_observations=3 | Low extra cost |
+| Strict low-noise mapping outdoors | window_frames=48, required_observations=5, min_neighbor_support=2 | Higher memory for staging |
+
+#### Parameter Interaction Notes
+* `required_observations` should never exceed `window_frames` (node will still run; voxel simply never promotes).
+* `stale_frames` should be >= `window_frames` unless you want aggressive discard of partially accumulated evidence.
+* Setting `deoccupy_frames` too low causes flicker on static surfaces—start large and reduce gradually.
+* `fractional_hits=false` gives a binary “promote or nothing” behavior that can sharpen edges but loses gradual probability build-up.
+* With very sparse sensors, prefer spatial support (min_neighbor_support) over very high required_observations.
+
+#### Migration (Legacy Parameters Removed)
+Older `filter.confirm_hits` / `filter.confirm_window` have been removed. Use:
+* `required_observations` instead of confirm_hits
+* `window_frames` (plus `stale_frames`) instead of confirm_window
+If old keys remain in your YAML they are ignored; remove them to avoid confusion.
 
 
 ## 3.1.5 Required tf Transforms

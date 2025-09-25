@@ -1,26 +1,31 @@
 bonxai_server_node:
   ros__parameters:
-    resolution: 0.02
-    frame_id: "map"
-    base_frame_id: "base_footprint"
+    # Map / frame configuration
+    resolution: 0.02              # voxel edge length in meters
+    frame_id: "map"               # global/world frame for published map
+    base_frame_id: "base_footprint"  # robot base (used externally, not filtered here)
 
-    occupancy_min_z: -100.0
-    occupancy_max_z: 100.0
+    # Output visualization height cropping (does not affect internal map)
+    occupancy_min_z: -100.0       # minimum voxel center z to publish
+    occupancy_max_z: 100.0        # maximum voxel center z to publish
 
+    # Sensor model (hit/miss probabilities & clamping bounds)
     sensor_model:
-      max_range: -1.0
-      hit: 0.7
-      miss: 0.4
-      min: 0.12
-      max: 0.97
+      max_range: -1.0             # -1 = unlimited ray length; else truncates & inserts a miss
+      hit: 0.7                    # probability for an observed occupied voxel
+      miss: 0.4                   # probability for free along cleared rays
+      min: 0.12                   # lower clamp bound (log-odds floor)
+      max: 0.97                   # upper clamp bound (log-odds ceiling)
 
+    # Latching: true republishes full data on each change (higher overhead) vs. event-only
     latch: false
 
+    # Advanced temporal + spatial filtering
     filter:
-      window_frames: 32      # size of sliding temporal window (frames, 1..64)
-      required_observations: 3  # bits (distinct frames) required within window for promotion
-      min_neighbor_support: 1   # require this many occupied/staged neighbors (0 disables spatial gating)
-      stale_frames: 64       # drop staged voxel if not re-seen within this many frames
-      deoccupy_frames: 0     # if >0, decay occupied voxels not reconfirmed within this many frames
-      fractional_hits: true  # accumulate fractional log-odds while staged before promotion
+      window_frames: 32           # frames in sliding temporal window (1..64)
+      required_observations: 3    # unique frames with hits needed for promotion
+      min_neighbor_support: 1     # occupied/staging 6-neighbors required (0=disable)
+      stale_frames: 64            # discard staged voxel if not re-seen within this many frames
+      deoccupy_frames: 0          # decay confirmed voxel after N frames w/o reconfirm (0=disable)
+      fractional_hits: true       # accumulate fractional log-odds prior to promotion
 
