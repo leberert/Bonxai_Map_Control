@@ -56,7 +56,8 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
     max_range_ = declare_parameter("sensor_model.max_range", -1.0, max_range_desc);
   }
 
-  res_ = declare_parameter("resolution", 0.1);
+  declare_parameter("resolution", 0.1);
+  res_ = get_parameter("resolution").as_double();
 
   rcl_interfaces::msg::ParameterDescriptor prob_hit_desc;
   prob_hit_desc.description =
@@ -65,7 +66,7 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   prob_hit_range.from_value = 0.5;
   prob_hit_range.to_value = 1.0;
   prob_hit_desc.floating_point_range.push_back(prob_hit_range);
-  const double prob_hit = declare_parameter("sensor_model.hit", 0.7, prob_hit_desc);
+  declare_parameter("sensor_model.hit", 0.7, prob_hit_desc);
 
   rcl_interfaces::msg::ParameterDescriptor prob_miss_desc;
   prob_miss_desc.description =
@@ -74,7 +75,7 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   prob_miss_range.from_value = 0.0;
   prob_miss_range.to_value = 0.5;
   prob_miss_desc.floating_point_range.push_back(prob_miss_range);
-  const double prob_miss = declare_parameter("sensor_model.miss", 0.4, prob_miss_desc);
+  declare_parameter("sensor_model.miss", 0.4, prob_miss_desc);
 
   rcl_interfaces::msg::ParameterDescriptor prob_min_desc;
   prob_min_desc.description = "Minimum probability for clamping when dynamically building a map";
@@ -82,7 +83,7 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   prob_min_range.from_value = 0.0;
   prob_min_range.to_value = 1.0;
   prob_min_desc.floating_point_range.push_back(prob_min_range);
-  const double thres_min = declare_parameter("sensor_model.min", 0.12, prob_min_desc);
+  declare_parameter("sensor_model.min", 0.12, prob_min_desc);
 
   rcl_interfaces::msg::ParameterDescriptor prob_max_desc;
   prob_max_desc.description = "Maximum probability for clamping when dynamically building a map";
@@ -90,31 +91,55 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   prob_max_range.from_value = 0.0;
   prob_max_range.to_value = 1.0;
   prob_max_desc.floating_point_range.push_back(prob_max_range);
-  const double thres_max = declare_parameter("sensor_model.max", 0.97, prob_max_desc);
+  declare_parameter("sensor_model.max", 0.97, prob_max_desc);
+  
+  // Now get the actual values from parameters (YAML file values if provided)
+  const double prob_hit = get_parameter("sensor_model.hit").as_double();
+  const double prob_miss = get_parameter("sensor_model.miss").as_double();
+  const double thres_min = get_parameter("sensor_model.min").as_double();
+  const double thres_max = get_parameter("sensor_model.max").as_double();
+  
+  RCLCPP_INFO(get_logger(), "Loaded sensor model from parameters: hit=%.3f miss=%.3f min=%.3f max=%.3f", 
+              prob_hit, prob_miss, thres_min, thres_max);
 
-  // pause mapping parameter
-  pause_mapping_ = declare_parameter("pause_mapping", false,
-    rcl_interfaces::msg::ParameterDescriptor().set__description("Pause the mapping process"));
+  declare_parameter("latch", false);
+  latched_topics_ = get_parameter("latch").as_bool();
+
+  // Initialize pause_mapping_ to false (controlled only via service)
+  pause_mapping_ = false;
 
   // Filtering parameters (advanced only; legacy confirm_* removed)
-  auto adv_window_frames = declare_parameter("filter.window_frames", 32);
-  auto adv_required_observations = declare_parameter("filter.required_observations", 3);
-  auto adv_min_neighbor_support = declare_parameter("filter.min_neighbor_support", 0);
-  auto adv_stale_frames = declare_parameter("filter.stale_frames", 64);
-  auto adv_deoccupy_frames = declare_parameter("filter.deoccupy_frames", 0);
-  auto adv_fractional_hits = declare_parameter("filter.fractional_hits", true);
+  // Declare parameters first, then get their actual values (which will come from YAML if provided)
+  declare_parameter("filter.window_frames", 32);
+  declare_parameter("filter.required_observations", 3);  
+  declare_parameter("filter.min_neighbor_support", 0);
+  declare_parameter("filter.stale_frames", 64);
+  declare_parameter("filter.deoccupy_frames", 0);
+  declare_parameter("filter.fractional_hits", true);
+  
+  // Now get the actual values (from YAML file if provided, otherwise defaults)
+  auto adv_window_frames = get_parameter("filter.window_frames").as_int();
+  auto adv_required_observations = get_parameter("filter.required_observations").as_int();
+  auto adv_min_neighbor_support = get_parameter("filter.min_neighbor_support").as_int();
+  auto adv_stale_frames = get_parameter("filter.stale_frames").as_int();
+  auto adv_deoccupy_frames = get_parameter("filter.deoccupy_frames").as_int();
+  auto adv_fractional_hits = get_parameter("filter.fractional_hits").as_bool();
+  
   RCLCPP_INFO(get_logger(),
-    "Filter config: window_frames=%ld required=%ld neigh=%ld stale=%ld deocc=%ld fractional=%s",
+    "Loaded filter config from parameters: window_frames=%ld required=%ld neigh=%ld stale=%ld deocc=%ld fractional=%s",
     static_cast<long>(adv_window_frames), static_cast<long>(adv_required_observations),
     static_cast<long>(adv_min_neighbor_support), static_cast<long>(adv_stale_frames), static_cast<long>(adv_deoccupy_frames), adv_fractional_hits ? "true" : "false");
 
   // initialize bonxai object & params
   RCLCPP_INFO(get_logger(), "Voxel resolution %f", res_);
   bonxai_ = std::make_unique<BonxaiT>(res_);
-  BonxaiT::Options options = {bonxai_->logods(prob_miss), bonxai_->logods(prob_hit),
-                              bonxai_->logods(thres_min), bonxai_->logods(thres_max)};
+  BonxaiT::Options options; // default constructed keeps occupancy_threshold_log
+  options.prob_miss_log = bonxai_->logods(prob_miss);
+  options.prob_hit_log  = bonxai_->logods(prob_hit);
+  options.clamp_min_log = bonxai_->logods(thres_min);
+  options.clamp_max_log = bonxai_->logods(thres_max);
   options.window_frames = static_cast<uint8_t>(std::clamp<int>(static_cast<int>(adv_window_frames), 1, 64));
-  options.required_observations = static_cast<uint8_t>(adv_required_observations);
+  options.required_observations = static_cast<uint8_t>(std::max<int>(1, static_cast<int>(adv_required_observations)));
   options.min_neighbor_support = static_cast<uint8_t>(adv_min_neighbor_support);
   options.stale_frames = static_cast<uint16_t>(adv_stale_frames);
   options.deoccupy_frames = static_cast<uint16_t>(adv_deoccupy_frames);
@@ -129,7 +154,6 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
               static_cast<unsigned>(options.window_frames), static_cast<unsigned>(options.required_observations), static_cast<unsigned>(options.min_neighbor_support),
               static_cast<unsigned>(options.stale_frames), static_cast<unsigned>(options.deoccupy_frames), options.fractional_hits ? "on" : "off");
 
-  latched_topics_ = declare_parameter("latch", true);
   if (latched_topics_) {
     RCLCPP_INFO(
         get_logger(),
@@ -162,7 +186,7 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
   reset_srv_ =
       create_service<ResetSrv>("~/reset", std::bind(&BonxaiServer::resetSrv, this, _1, _2));
 
-  // service to toggle pause_mapping_
+  // service to pause/resume mapping
   pause_srv_ = create_service<PauseSrv>("~/pause_mapping", std::bind(&BonxaiServer::pauseSrv, this,
   _1, _2));
 
@@ -172,6 +196,10 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions& node_options)
 }
 
 void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud) {
+  if (!cloud) {
+    RCLCPP_ERROR(get_logger(), "Received null cloud pointer");
+    return;
+  }
   if (pause_mapping_) {
     RCLCPP_INFO(get_logger(), "Mapping is paused. Skipping point cloud processing.");
     return;
@@ -180,7 +208,18 @@ void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud) 
   const auto start_time = rclcpp::Clock{}.now();
 
   PCLPointCloud pc;  // input cloud for filtering and ground-detection
-  pcl::fromROSMsg(*cloud, pc);
+  
+  try {
+    pcl::fromROSMsg(*cloud, pc);
+  } catch (const std::exception& ex) {
+    RCLCPP_ERROR(get_logger(), "Failed to convert ROS message to PCL: %s", ex.what());
+    return;
+  }
+
+  if (pc.points.empty()) {
+    RCLCPP_WARN(get_logger(), "Received empty point cloud, skipping");
+    return;
+  }
 
   // remove NaN and Inf values
   size_t filtered_index = 0;
@@ -190,6 +229,11 @@ void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud) 
     }
   }
   pc.resize(filtered_index);
+
+  if (pc.points.empty()) {
+    RCLCPP_WARN(get_logger(), "All points filtered out (NaN/Inf), skipping");
+    return;
+  }
 
   // Sensor In Global Frames Coordinates
   geometry_msgs::msg::TransformStamped sensor_to_world_transform_stamped;
@@ -212,11 +256,42 @@ void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud) 
   const auto& t = sensor_to_world_transform_stamped.transform.translation;
 
   const pcl::PointXYZ sensor_to_world_vec3(t.x, t.y, t.z);
-  if (max_range_ >= 0) {
-    bonxai_->insertPointCloud(pc.points, sensor_to_world_vec3, max_range_);
-  } else {
-    bonxai_->insertPointCloud(
-        pc.points, sensor_to_world_vec3, std::numeric_limits<double>::infinity());
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    if (!first_cloud_logged_) {
+      first_cloud_logged_ = true;
+      const auto & opts = bonxai_->options();
+      RCLCPP_DEBUG(get_logger(),
+        "First cloud arrival: pts=%u window=%u req=%u neigh=%u stale=%u deocc=%u frac=%s",
+        cloud->width * cloud->height, opts.window_frames, opts.required_observations,
+        opts.min_neighbor_support, opts.stale_frames, opts.deoccupy_frames,
+        opts.fractional_hits?"on":"off");
+    }
+    const auto & opts = bonxai_->options();
+    if (opts.window_frames == 0 || opts.window_frames > 64) {
+      RCLCPP_ERROR(get_logger(), "Invalid window_frames=%u (corrupted options) — aborting insertion", opts.window_frames);
+      return;
+    }
+    
+    // Add safety checks and exception handling
+    try {
+      RCLCPP_DEBUG(get_logger(), "About to call insertPointCloud with %zu points", pc.points.size());
+      
+      if (max_range_ >= 0) {
+        bonxai_->insertPointCloud(pc.points, sensor_to_world_vec3, max_range_);
+      } else {
+        bonxai_->insertPointCloud(
+            pc.points, sensor_to_world_vec3, std::numeric_limits<double>::infinity());
+      }
+      
+      RCLCPP_DEBUG(get_logger(), "insertPointCloud completed successfully");
+    } catch (const std::exception& ex) {
+      RCLCPP_ERROR(get_logger(), "Exception in insertPointCloud: %s", ex.what());
+      return;
+    } catch (...) {
+      RCLCPP_ERROR(get_logger(), "Unknown exception in insertPointCloud");
+      return;
+    }
   }
   double total_elapsed = (rclcpp::Clock{}.now() - start_time).seconds();
   RCLCPP_DEBUG(get_logger(), "Pointcloud insertion in Bonxai done, %f sec)", total_elapsed);
@@ -228,8 +303,6 @@ rcl_interfaces::msg::SetParametersResult BonxaiServer::onParameter(
     const std::vector<rclcpp::Parameter>& parameters) {
   update_param(parameters, "occupancy_min_z", occupancy_min_z_);
   update_param(parameters, "occupancy_max_z", occupancy_max_z_);
-  // update pause mapping param
-  update_param(parameters, "pause_mapping", pause_mapping_);
 
   double sensor_model_min{get_parameter("sensor_model.min").as_double()};
   update_param(parameters, "sensor_model.min", sensor_model_min);
@@ -240,11 +313,16 @@ rcl_interfaces::msg::SetParametersResult BonxaiServer::onParameter(
   double sensor_model_miss{get_parameter("sensor_model.miss").as_double()};
   update_param(parameters, "sensor_model.miss", sensor_model_miss);
 
-  BonxaiT::Options options = {
-      bonxai_->logods(sensor_model_miss), bonxai_->logods(sensor_model_hit),
-      bonxai_->logods(sensor_model_min), bonxai_->logods(sensor_model_max)};
-
-  bonxai_->setOptions(options);
+  // Safely update only sensor model / clamping fields; preserve occupancy threshold and filter settings
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    auto opts = bonxai_->options();
+    opts.prob_miss_log = bonxai_->logods(sensor_model_miss);
+    opts.prob_hit_log  = bonxai_->logods(sensor_model_hit);
+    opts.clamp_min_log = bonxai_->logods(sensor_model_min);
+    opts.clamp_max_log = bonxai_->logods(sensor_model_max);
+    bonxai_->setOptions(opts);
+  }
 
   bool filter_params_changed = false;
   int tmp_window_frames = get_parameter("filter.window_frames").as_int();
@@ -261,16 +339,17 @@ rcl_interfaces::msg::SetParametersResult BonxaiServer::onParameter(
   filter_params_changed |= update_param(parameters, "filter.fractional_hits", tmp_fractional);
 
   if (filter_params_changed) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
     auto opts = bonxai_->options();
     opts.window_frames = static_cast<uint8_t>(std::clamp(tmp_window_frames, 1, 64));
-    opts.required_observations = static_cast<uint8_t>(tmp_required_obs);
+    opts.required_observations = static_cast<uint8_t>(std::max(1, tmp_required_obs));
     opts.min_neighbor_support = static_cast<uint8_t>(tmp_min_neigh);
     opts.stale_frames = static_cast<uint16_t>(tmp_stale_frames);
     opts.deoccupy_frames = static_cast<uint16_t>(tmp_deocc_frames);
     opts.fractional_hits = tmp_fractional;
     bonxai_->setOptions(opts);
     RCLCPP_INFO(get_logger(),
-      "Updated filter config: window_frames=%d required=%d neigh=%d stale=%d deocc=%d fractional=%s",
+      "Updated filter config: window_frames=%u required=%u neigh=%u stale=%u deocc=%u fractional=%s",
       opts.window_frames, opts.required_observations,
       opts.min_neighbor_support, opts.stale_frames, opts.deoccupy_frames, opts.fractional_hits ? "true" : "false");
   }
@@ -285,12 +364,18 @@ rcl_interfaces::msg::SetParametersResult BonxaiServer::onParameter(
 
 void BonxaiServer::publishAll(const rclcpp::Time& rostime) {
   const auto start_time = rclcpp::Clock{}.now();
-  thread_local std::vector<Eigen::Vector3d> bonxai_result;
-  bonxai_result.clear();
-  bonxai_->getOccupiedVoxels(bonxai_result);
+  std::vector<Eigen::Vector3d> bonxai_result;
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    if (!bonxai_) {
+      RCLCPP_DEBUG(get_logger(), "publishAll called with null bonxai_");
+      return;
+    }
+    bonxai_->getOccupiedVoxels(bonxai_result);
+  }
 
   if (bonxai_result.size() <= 1) {
-    RCLCPP_WARN(get_logger(), "Nothing to publish, bonxai is empty");
+    RCLCPP_DEBUG(get_logger(), "Nothing to publish, bonxai is empty");
     return;
   }
 
@@ -301,8 +386,8 @@ void BonxaiServer::publishAll(const rclcpp::Time& rostime) {
 
   // init pointcloud for occupied space:
   if (publish_point_cloud) {
-    thread_local pcl::PointCloud<PCLPoint> pcl_cloud;
-    pcl_cloud.clear();
+  pcl::PointCloud<PCLPoint> pcl_cloud;
+  pcl_cloud.reserve(bonxai_result.size());
 
     for (const auto& voxel : bonxai_result) {  // Directly use occupancy filtered at integration
       if (voxel.z() >= occupancy_min_z_ && voxel.z() <= occupancy_max_z_) {
@@ -315,14 +400,20 @@ void BonxaiServer::publishAll(const rclcpp::Time& rostime) {
     cloud.header.frame_id = world_frame_id_;
     cloud.header.stamp = rostime;
     point_cloud_pub_->publish(cloud);
-    RCLCPP_WARN(get_logger(), "Published occupancy grid with %ld voxels", pcl_cloud.points.size());
+    RCLCPP_DEBUG(get_logger(), "Published occupancy grid with %ld voxels", pcl_cloud.points.size());
   }
 }
 
 bool BonxaiServer::resetSrv(
     const std::shared_ptr<ResetSrv::Request>, const std::shared_ptr<ResetSrv::Response>) {
   const auto rostime = now();
-  bonxai_ = std::make_unique<BonxaiT>(res_);
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    // Preserve current options before recreating the map
+    auto current_options = bonxai_->options();
+    bonxai_ = std::make_unique<BonxaiT>(res_);
+    bonxai_->setOptions(current_options);
+  }
 
   RCLCPP_INFO(get_logger(), "Cleared Bonxai");
   publishAll(rostime);
@@ -330,10 +421,10 @@ bool BonxaiServer::resetSrv(
   return true;
 }
 
-// Service callback to toggle the pause_mapping_ parameter
+// Service callback to control mapping pause/resume
 bool BonxaiServer::pauseSrv(
     const std::shared_ptr<PauseSrv::Request> request, const std::shared_ptr<PauseSrv::Response> response) {
-  // Toggle the pause_mapping_ parameter
+  // Set the pause_mapping_ flag based on service request
   pause_mapping_ = request->data;
 
   // Log the state and respond
@@ -352,6 +443,6 @@ bool BonxaiServer::pauseSrv(
 
 }  // namespace bonxai_server
 
-#include <rclcpp_components/register_node_macro.hpp>
+#include "rclcpp_components/register_node_macro.hpp"
 
 RCLCPP_COMPONENTS_REGISTER_NODE(bonxai_server::BonxaiServer)

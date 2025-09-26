@@ -20,12 +20,14 @@ bonxai_server_node:
     # Latching: true republishes full data on each change (higher overhead) vs. event-only
     latch: false
 
-    # Advanced temporal + spatial filtering
+    # Advanced filtering for noise reduction
     filter:
-      window_frames: 32           # frames in sliding temporal window (1..64)
-      required_observations: 3    # unique frames with hits needed for promotion
+      # spatial filtering
       min_neighbor_support: 1     # occupied/staging 6-neighbors required (0=disable)
+      # temporal filtering (optional for very high noise environments)
+      window_frames: 32           # frames in sliding temporal window (1..64)
+      required_observations: 2   # unique frames with hits needed for promotion (1 default)
       stale_frames: 64            # discard staged voxel if not re-seen within this many frames
-      deoccupy_frames: 0          # decay confirmed voxel after N frames w/o reconfirm (0=disable)
+      deoccupy_frames: 0         # decay (forget) confirmed voxel after N frames w/o reconfirm (0 = disable)
       fractional_hits: true       # accumulate fractional log-odds prior to promotion
 

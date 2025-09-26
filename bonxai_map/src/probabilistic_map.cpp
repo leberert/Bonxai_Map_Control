@@ -30,6 +30,11 @@ void ProbabilisticMap::setOptions(const Options& options) {
 void ProbabilisticMap::addHitPoint(const Vector3D& point) {
   const auto coord = _grid.posToCoord(point);
   CellT* cell = _accessor.value(coord, true);
+  
+  if (!cell) {
+    return; // Skip this point if we can't create/access the cell
+  }
+  
   // If already updated this cycle, skip (prevents double counting)
   if (cell->update_id == _update_count) {
     return;
@@ -37,8 +42,9 @@ void ProbabilisticMap::addHitPoint(const Vector3D& point) {
 
   const bool already_occupied = cell->probability_log > _options.occupancy_threshold_log;
 
-  // Fast path: no temporal filtering requested
-  if (_options.required_observations <= 1 || _options.window_frames <= 1) {
+  // Fast path: immediate integration when temporal filtering effectively disabled.
+  if (_options.min_neighbor_support == 0 &&
+      (_options.required_observations <= 1 || _options.window_frames <= 1)) {
     cell->probability_log = std::min(cell->probability_log + _options.prob_hit_log, _options.clamp_max_log);
     cell->update_id = _update_count;
     _hit_coords.push_back(coord);
@@ -63,7 +69,6 @@ void ProbabilisticMap::addHitPoint(const Vector3D& point) {
   st.last_seen = _frame_counter;
 
   // Shift mask left by one, insert new observation bit at LSB position.
-  // We only keep at most 64 frames of history.
   if (_options.window_frames >= 64) {
     st.mask = (st.mask << 1) | 1ULL;
   } else {
@@ -86,31 +91,102 @@ void ProbabilisticMap::addHitPoint(const Vector3D& point) {
         _options.prob_hit_log * 4); // clamp fractional accumulation to avoid runaway (heuristic)
   }
 
-  // Spatial neighbor support (only computed when needed to avoid overhead)
+  // Enhanced spatial neighbor support with noise filtering
   bool spatial_ok = (_options.min_neighbor_support == 0);
   if (!spatial_ok && st.popcnt >= _options.required_observations) {
-    // Evaluate 6-neighborhood
-    static const CoordT dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    // Evaluate 6-connectivity + extended neighborhood for isolated points
+    static const CoordT dirs_6[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
     uint8_t support = 0;
-    for (const auto & d : dirs) {
+    uint8_t staging_support = 0;
+    
+    // Create a new accessor for neighbor checks to avoid potential corruption
+    auto neighbor_accessor = _grid.createAccessor();
+    
+    // First check 6-connectivity for standard neighbor support
+    for (const auto & d : dirs_6) {
       const CoordT ncoord = coord + d;
-      if (auto* ncell = _accessor.value(ncoord, false)) {
+      
+      if (auto* ncell = neighbor_accessor.value(ncoord, false)) {
         if (ncell->probability_log > _options.occupancy_threshold_log) {
-          if (++support >= _options.min_neighbor_support) { spatial_ok = true; break; }
+          support++;
         }
       } else {
-        // If neighbor also staging and has at least 1 popcnt treat as weak support
+        // Check staging neighbors but be more restrictive
         auto sit = _staging.find(ncoord);
-        if (sit != _staging.end() && sit->second.popcnt > 0) {
-          if (++support >= _options.min_neighbor_support) { spatial_ok = true; break; }
+        if (sit != _staging.end() && sit->second.popcnt >= _options.required_observations) {
+          staging_support++;
         }
       }
     }
-    st.neighbor_support = support;
+    
+    // For potentially isolated noise points (especially elevated ones), apply stricter criteria
+    const double point_z = _grid.coordToPos(coord).z;
+    bool is_elevated = point_z > 1.5; // Above 1.5m is considered elevated
+    
+    if (is_elevated && support == 0 && staging_support == 0) {
+      // For elevated isolated points, check extended 26-connectivity neighborhood
+      static const CoordT dirs_26[26] = {
+        // Face neighbors (6)
+        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
+        // Edge neighbors (12) 
+        {1,1,0},{1,-1,0},{-1,1,0},{-1,-1,0},
+        {1,0,1},{1,0,-1},{-1,0,1},{-1,0,-1},
+        {0,1,1},{0,1,-1},{0,-1,1},{0,-1,-1},
+        // Corner neighbors (8)
+        {1,1,1},{1,1,-1},{1,-1,1},{1,-1,-1},
+        {-1,1,1},{-1,1,-1},{-1,-1,1},{-1,-1,-1}
+      };
+      
+      uint8_t extended_support = 0;
+      uint8_t extended_staging = 0;
+      
+      for (const auto & d : dirs_26) {
+        const CoordT ncoord = coord + d;
+        
+        if (auto* ncell = neighbor_accessor.value(ncoord, false)) {
+          if (ncell->probability_log > _options.occupancy_threshold_log) {
+            extended_support++;
+          }
+        } else {
+          auto sit = _staging.find(ncoord);
+          if (sit != _staging.end() && sit->second.popcnt >= _options.required_observations) {
+            extended_staging++;
+          }
+        }
+      }
+      
+      // Require at least 2 extended neighbors for elevated isolated points
+      spatial_ok = (extended_support + extended_staging >= std::max(2u, static_cast<unsigned>(_options.min_neighbor_support)));
+    } else {
+      // Standard spatial support check
+      spatial_ok = (support + staging_support >= _options.min_neighbor_support);
+    }
+    
+    st.neighbor_support = support + staging_support;
   }
 
-  // Promotion criteria
-  if (st.popcnt >= _options.required_observations && spatial_ok) {
+  // Enhanced temporal self-persistence with noise filtering
+  if (!spatial_ok) {
+    const double point_z = _grid.coordToPos(coord).z;
+    bool is_elevated = point_z > 1.5; // Above 1.5m is considered elevated
+    
+    // Calculate minimum persistence threshold based on required_observations and elevation
+    uint8_t persistence_threshold;
+    if (is_elevated) {
+      // Elevated points need more evidence regardless of required_observations
+      persistence_threshold = std::max<uint8_t>(2, _options.required_observations);
+    } else {
+      // Ground-level points: allow promotion with required observations even without spatial support
+      // This breaks the chicken-and-egg problem for fresh maps
+      persistence_threshold = _options.required_observations;
+    }
+    
+    if (st.popcnt >= persistence_threshold) {
+      spatial_ok = true;
+    }
+  }
+
+  if (st.popcnt >= std::max<uint8_t>(1, _options.required_observations) && spatial_ok) {
     int32_t add_log = _options.fractional_hits ? st.pending_log : _options.prob_hit_log;
     add_log = std::max<int32_t>(add_log, _options.prob_hit_log); // ensure at least one full hit effect
     cell->probability_log = std::min(cell->probability_log + add_log, _options.clamp_max_log);
@@ -190,20 +266,52 @@ void Bonxai::ProbabilisticMap::updateFreeCells(const Vector3D& origin) {
   // staging timeout & stale cleanup
   if (!_staging.empty()) {
     const uint64_t stale_limit = (_options.stale_frames > 0) ? (_frame_counter - _options.stale_frames) : 0;
+    size_t stale_removed = 0;
     for (auto it = _staging.begin(); it != _staging.end();) {
       if (_options.stale_frames > 0 && it->second.last_seen < stale_limit) {
         it = _staging.erase(it);
+        stale_removed++;
       } else {
         ++it;
       }
     }
   }
 
-  // Deoccupy decay: optionally apply a miss to cells not recently confirmed
-  if (_options.deoccupy_frames > 0 && !_last_confirmed_hit.empty()) {
-    const uint64_t decay_limit = (_frame_counter > _options.deoccupy_frames) ? (_frame_counter - _options.deoccupy_frames) : 0;
+  // Enhanced deoccupy decay with isolated noise point removal
+  if (!_last_confirmed_hit.empty()) {
+    const uint64_t decay_limit = (_options.deoccupy_frames > 0 && _frame_counter > _options.deoccupy_frames) ? 
+                                 (_frame_counter - _options.deoccupy_frames) : 0;
+    
     for (auto it = _last_confirmed_hit.begin(); it != _last_confirmed_hit.end();) {
-      if (it->second < decay_limit) {
+      bool should_decay = (_options.deoccupy_frames > 0 && it->second < decay_limit);
+      
+      // Additional check: isolated elevated points get more aggressive decay
+      if (!should_decay && _frame_counter % 10 == 0) { // Check every 10 frames
+        const auto coord = it->first;
+        const double point_z = _grid.coordToPos(coord).z;
+        
+        if (point_z > 1.5) { // Elevated point
+          // Check if it's still isolated
+          static const CoordT dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+          uint8_t neighbor_count = 0;
+          
+          for (const auto & d : dirs) {
+            const CoordT ncoord = coord + d;
+            if (auto* ncell = _accessor.value(ncoord, false)) {
+              if (ncell->probability_log > _options.occupancy_threshold_log) {
+                neighbor_count++;
+              }
+            }
+          }
+          
+          // If elevated and isolated, apply decay even without time limit
+          if (neighbor_count == 0) {
+            should_decay = true;
+          }
+        }
+      }
+      
+      if (should_decay) {
         if (auto* cell = _accessor.value(it->first, false)) {
           cell->probability_log = std::max(cell->probability_log + _options.prob_miss_log, _options.clamp_min_log);
           // If it drops below occupancy threshold we can remove tracking

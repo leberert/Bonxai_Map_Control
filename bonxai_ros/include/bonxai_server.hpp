@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <mutex>
 
 #include "bonxai/bonxai.hpp"
 #include "bonxai_map/pcl_utils.hpp"
@@ -87,8 +88,13 @@ class BonxaiServer : public rclcpp::Node {
   unsigned multires_2d_scale_;
   bool project_complete_map_;
 
-  // pause mapping parameter
+  // pause mapping flag (controlled via service only)
   bool pause_mapping_;
+
+    // Synchronize access to bonxai_ (insertion, parameter updates, reset, publish)
+    std::mutex map_mutex_;
+
+    bool first_cloud_logged_ = false;
 
  private:
      // (Legacy filtering parameters removed; advanced filtering configured via direct parameters)
