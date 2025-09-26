@@ -29,35 +29,37 @@
 #include "tf2_ros/message_filter.h"
 #include "tf2_ros/transform_listener.h"
 
-namespace bonxai_server {
+namespace bonxai_server
+{
 
 using sensor_msgs::msg::PointCloud2;
 
-class BonxaiServer : public rclcpp::Node {
- public:
+class BonxaiServer : public rclcpp::Node
+{
+public:
   using PCLPoint = pcl::PointXYZ;
   using PCLPointCloud = pcl::PointCloud<pcl::PointXYZ>;
   using BonxaiT = Bonxai::ProbabilisticMap;
   using ResetSrv = std_srvs::srv::Empty;
   using PauseSrv = std_srvs::srv::SetBool;
 
-  explicit BonxaiServer(const rclcpp::NodeOptions& node_options);
+  explicit BonxaiServer(const rclcpp::NodeOptions & node_options);
 
   bool resetSrv(
-      const std::shared_ptr<ResetSrv::Request> req, const std::shared_ptr<ResetSrv::Response> resp);
+    const std::shared_ptr<ResetSrv::Request> req, const std::shared_ptr<ResetSrv::Response> resp);
 
   bool pauseSrv(
-      const std::shared_ptr<PauseSrv::Request> request, const std::shared_ptr<PauseSrv::Response> response);
+    const std::shared_ptr<PauseSrv::Request> request, const std::shared_ptr<PauseSrv::Response> response);
 
   virtual void insertCloudCallback(const PointCloud2::ConstSharedPtr cloud);
 
- protected:
-  virtual void publishAll(const rclcpp::Time& rostime);
+protected:
+  virtual void publishAll(const rclcpp::Time & rostime);
 
   OnSetParametersCallbackHandle::SharedPtr set_param_res_;
 
   rcl_interfaces::msg::SetParametersResult onParameter(
-      const std::vector<rclcpp::Parameter>& parameters);
+    const std::vector<rclcpp::Parameter> & parameters);
 
   rclcpp::Publisher<PointCloud2>::SharedPtr point_cloud_pub_;
   message_filters::Subscriber<PointCloud2> point_cloud_sub_;
@@ -91,13 +93,13 @@ class BonxaiServer : public rclcpp::Node {
   // pause mapping flag (controlled via service only)
   bool pause_mapping_;
 
-    // Synchronize access to bonxai_ (insertion, parameter updates, reset, publish)
-    std::mutex map_mutex_;
+  // Synchronize access to bonxai_ (insertion, parameter updates, reset, publish)
+  std::mutex map_mutex_;
 
-    bool first_cloud_logged_ = false;
+  bool first_cloud_logged_ = false;
 
- private:
-     // (Legacy filtering parameters removed; advanced filtering configured via direct parameters)
+private:
+  // (Legacy filtering parameters removed; advanced filtering configured via direct parameters)
 };
 }  // namespace bonxai_server
 

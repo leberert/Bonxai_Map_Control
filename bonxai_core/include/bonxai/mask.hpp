@@ -14,22 +14,24 @@
 #include <cstdint>
 #include <utility>
 
-namespace Bonxai {
+namespace Bonxai
+{
 
-class Mask {
-  uint64_t* words_ = nullptr;
+class Mask
+{
+  uint64_t * words_ = nullptr;
   // small object optimization, that will be used when
   // SIZE <= 512 bits, i.e LOG2DIM <= 3
   uint64_t static_words_[8];
 
- public:
+public:
   /// Initialize all bits to zero.
   Mask(size_t log2dim);
   /// Initialize all bits to a given value.
   Mask(size_t log2dim, bool on);
 
-  Mask(const Mask& other);
-  Mask(Mask&& other);
+  Mask(const Mask & other);
+  Mask(Mask && other);
 
   ~Mask();
 
@@ -37,36 +39,42 @@ class Mask {
   size_t memUsage() const;
 
   /// Return the number of bits available in this Mask
-  uint32_t bitCount() const {
+  uint32_t bitCount() const
+  {
     return SIZE;
   }
 
   /// Return the number of machine words used by this Mask
-  uint32_t wordCount() const {
+  uint32_t wordCount() const
+  {
     return WORD_COUNT;
   }
 
-  uint64_t getWord(size_t n) const {
+  uint64_t getWord(size_t n) const
+  {
     return words_[n];
   }
 
-  void setWord(size_t n, uint64_t v) {
+  void setWord(size_t n, uint64_t v)
+  {
     words_[n] = v;
   }
 
   uint32_t countOn() const;
 
-  class Iterator {
-   public:
-    Iterator(const Mask* parent)
-        : pos_(parent->SIZE),
-          parent_(parent) {}
-    Iterator(uint32_t pos, const Mask* parent)
-        : pos_(pos),
-          parent_(parent) {}
-    Iterator& operator=(const Iterator&) = default;
+  class Iterator
+  {
+public:
+    Iterator(const Mask * parent)
+    : pos_(parent->SIZE),
+      parent_(parent) {}
+    Iterator(uint32_t pos, const Mask * parent)
+    : pos_(pos),
+      parent_(parent) {}
+    Iterator & operator=(const Iterator &) = default;
 
-    uint32_t operator*() const {
+    uint32_t operator*() const
+    {
       return pos_;
     }
 
@@ -74,23 +82,26 @@ class Mask {
       return pos_ != parent_->SIZE;
     }
 
-    Iterator& operator++() {
+    Iterator & operator++()
+    {
       pos_ = parent_->findNextOn(pos_ + 1);
       return *this;
     }
 
-   private:
+private:
     uint32_t pos_;
-    const Mask* parent_;
+    const Mask * parent_;
   };
 
-  bool operator==(const Mask& other) const;
+  bool operator==(const Mask & other) const;
 
-  bool operator!=(const Mask& other) const {
+  bool operator!=(const Mask & other) const
+  {
     return !((*this) == other);
   }
 
-  Iterator beginOn() const {
+  Iterator beginOn() const
+  {
     return Iterator(this->findFirstOn(), this);
   }
 
@@ -123,11 +134,12 @@ class Mask {
 
   uint32_t findFirstOn() const;
 
-  uint32_t size() const {
+  uint32_t size() const
+  {
     return SIZE;
   }
 
- private:
+private:
   uint32_t findNextOn(uint32_t start) const;
 
   static uint32_t FindLowestOn(uint64_t v);
@@ -151,7 +163,8 @@ class Mask {
 /// @warning Assumes that at least one bit is set in the word, i.e. @a v !=
 /// uint32_t(0)!
 
-inline uint32_t Mask::FindLowestOn(uint64_t v) {
+inline uint32_t Mask::FindLowestOn(uint64_t v)
+{
 #if defined(_MSC_VER) && defined(BONXAI_USE_INTRINSICS)
   unsigned long index;
   _BitScanForward64(&index, v);
@@ -160,9 +173,9 @@ inline uint32_t Mask::FindLowestOn(uint64_t v) {
   return static_cast<uint32_t>(__builtin_ctzll(v));
 #else
   static const unsigned char DeBruijn[64] = {
-      0,  1,  2,  53, 3,  7,  54, 27, 4,  38, 41, 8,  34, 55, 48, 28, 62, 5,  39, 46, 44, 42,
-      22, 9,  24, 35, 59, 56, 49, 18, 29, 11, 63, 52, 6,  26, 37, 40, 33, 47, 61, 45, 43, 21,
-      23, 58, 17, 10, 51, 25, 36, 32, 60, 20, 57, 16, 50, 31, 19, 15, 30, 14, 13, 12,
+    0, 1, 2, 53, 3, 7, 54, 27, 4, 38, 41, 8, 34, 55, 48, 28, 62, 5, 39, 46, 44, 42,
+    22, 9, 24, 35, 59, 56, 49, 18, 29, 11, 63, 52, 6, 26, 37, 40, 33, 47, 61, 45, 43, 21,
+    23, 58, 17, 10, 51, 25, 36, 32, 60, 20, 57, 16, 50, 31, 19, 15, 30, 14, 13, 12,
   };
 // disable unary minus on unsigned warning
 #if defined(_MSC_VER) && !defined(__NVCC__)
@@ -180,7 +193,8 @@ inline uint32_t Mask::FindLowestOn(uint64_t v) {
 
 /// @return Number of bits that are on in the specified 64-bit word
 
-inline uint32_t Mask::CountOn(uint64_t v) {
+inline uint32_t Mask::CountOn(uint64_t v)
+{
 #if defined(_MSC_VER) && defined(_M_X64)
   v = __popcnt64(v);
 #elif (defined(__GNUC__) || defined(__clang__))
@@ -195,38 +209,44 @@ inline uint32_t Mask::CountOn(uint64_t v) {
   return static_cast<uint32_t>(v);
 }
 
-inline void Mask::setOn() {
+inline void Mask::setOn()
+{
   for (uint32_t i = 0; i < WORD_COUNT; ++i) {
     words_[i] = ~uint64_t(0);
   }
 }
 
-inline void Mask::setOff() {
+inline void Mask::setOff()
+{
   for (uint32_t i = 0; i < WORD_COUNT; ++i) {
     words_[i] = uint64_t(0);
   }
 }
 
-inline void Mask::set(bool on) {
+inline void Mask::set(bool on)
+{
   const uint64_t v = on ? ~uint64_t(0) : uint64_t(0);
   for (uint32_t i = 0; i < WORD_COUNT; ++i) {
     words_[i] = v;
   }
 }
 
-inline void Mask::toggle() {
+inline void Mask::toggle()
+{
   uint32_t n = WORD_COUNT;
-  for (auto* w = words_; n--; ++w) {
+  for (auto * w = words_; n--; ++w) {
     *w = ~*w;
   }
 }
 
-inline void Mask::toggle(uint32_t n) {
+inline void Mask::toggle(uint32_t n)
+{
   words_[n >> 6] ^= uint64_t(1) << (n & 63);
 }
 
-inline uint32_t Mask::findFirstOn() const {
-  const uint64_t* w = words_;
+inline uint32_t Mask::findFirstOn() const
+{
+  const uint64_t * w = words_;
   uint32_t n = 0;
   while (n < WORD_COUNT && !*w) {
     ++w;
@@ -235,7 +255,8 @@ inline uint32_t Mask::findFirstOn() const {
   return n == WORD_COUNT ? SIZE : (n << 6) + FindLowestOn(*w);
 }
 
-inline uint32_t Mask::findNextOn(uint32_t start) const {
+inline uint32_t Mask::findNextOn(uint32_t start) const
+{
   uint32_t n = start >> 6;  // initiate
   if (n >= WORD_COUNT) {
     return SIZE;  // check for out of bounds
@@ -249,12 +270,13 @@ inline uint32_t Mask::findNextOn(uint32_t start) const {
   while (!b && ++n < WORD_COUNT) {
     b = words_[n];
   }                                                 // find next non-zero word
-  return (!b ? SIZE : (n << 6) + FindLowestOn(b));  // catch last word=0
+  return !b ? SIZE : (n << 6) + FindLowestOn(b);  // catch last word=0
 }
 
 inline Mask::Mask(size_t log2dim)
-    : SIZE(1U << (3 * log2dim)),
-      WORD_COUNT(std::max(SIZE >> 6, 1u)) {
+: SIZE(1U << (3 * log2dim)),
+  WORD_COUNT(std::max(SIZE >> 6, 1u))
+{
   words_ = (WORD_COUNT <= 8) ? static_words_ : new uint64_t[WORD_COUNT];
 
   for (uint32_t i = 0; i < WORD_COUNT; ++i) {
@@ -263,8 +285,9 @@ inline Mask::Mask(size_t log2dim)
 }
 
 inline Mask::Mask(size_t log2dim, bool on)
-    : SIZE(1U << (3 * log2dim)),
-      WORD_COUNT(std::max(SIZE >> 6, 1u)) {
+: SIZE(1U << (3 * log2dim)),
+  WORD_COUNT(std::max(SIZE >> 6, 1u))
+{
   words_ = (WORD_COUNT <= 8) ? static_words_ : new uint64_t[WORD_COUNT];
 
   const uint64_t v = on ? ~uint64_t(0) : uint64_t(0);
@@ -273,9 +296,10 @@ inline Mask::Mask(size_t log2dim, bool on)
   }
 }
 
-inline Mask::Mask(const Mask& other)
-    : SIZE(other.SIZE),
-      WORD_COUNT(other.WORD_COUNT) {
+inline Mask::Mask(const Mask & other)
+: SIZE(other.SIZE),
+  WORD_COUNT(other.WORD_COUNT)
+{
   words_ = (WORD_COUNT <= 8) ? static_words_ : new uint64_t[WORD_COUNT];
 
   for (uint32_t i = 0; i < WORD_COUNT; ++i) {
@@ -283,9 +307,10 @@ inline Mask::Mask(const Mask& other)
   }
 }
 
-inline Mask::Mask(Mask&& other)
-    : SIZE(other.SIZE),
-      WORD_COUNT(other.WORD_COUNT) {
+inline Mask::Mask(Mask && other)
+: SIZE(other.SIZE),
+  WORD_COUNT(other.WORD_COUNT)
+{
   if (WORD_COUNT <= 8) {
     words_ = static_words_;
     for (uint32_t i = 0; i < WORD_COUNT; ++i) {
@@ -296,28 +321,32 @@ inline Mask::Mask(Mask&& other)
   }
 }
 
-inline Mask::~Mask() {
+inline Mask::~Mask()
+{
   if (WORD_COUNT > 8) {
     delete[] words_;
   }
 }
 
-inline size_t Mask::memUsage() const {
+inline size_t Mask::memUsage() const
+{
   if (WORD_COUNT > 8) {
     return sizeof(Mask) + sizeof(uint64_t) * WORD_COUNT;
   }
   return sizeof(Mask);
 }
 
-inline uint32_t Mask::countOn() const {
+inline uint32_t Mask::countOn() const
+{
   uint32_t sum = 0, n = WORD_COUNT;
-  for (const uint64_t* w = words_; n--; ++w) {
+  for (const uint64_t * w = words_; n--; ++w) {
     sum += CountOn(*w);
   }
   return sum;
 }
 
-inline bool Mask::operator==(const Mask& other) const {
+inline bool Mask::operator==(const Mask & other) const
+{
   for (uint32_t i = 0; i < WORD_COUNT; ++i) {
     if (words_[i] != other.words_[i]) {
       return false;
@@ -326,11 +355,13 @@ inline bool Mask::operator==(const Mask& other) const {
   return true;
 }
 
-inline bool Mask::isOn(uint32_t n) const {
+inline bool Mask::isOn(uint32_t n) const
+{
   return 0 != (words_[n >> 6] & (uint64_t(1) << (n & 63)));
 }
 
-inline bool Mask::isOn() const {
+inline bool Mask::isOn() const
+{
   for (uint32_t i = 0; i < WORD_COUNT; ++i) {
     if (words_[i] != ~uint64_t(0)) {
       return false;
@@ -339,7 +370,8 @@ inline bool Mask::isOn() const {
   return true;
 }
 
-inline bool Mask::isOff() const {
+inline bool Mask::isOff() const
+{
   for (uint32_t i = 0; i < WORD_COUNT; ++i) {
     if (words_[i] != uint64_t(0)) {
       return false;
@@ -348,25 +380,28 @@ inline bool Mask::isOff() const {
   return true;
 }
 
-inline bool Mask::setOn(uint32_t n) {
-  uint64_t& word = words_[n >> 6];
+inline bool Mask::setOn(uint32_t n)
+{
+  uint64_t & word = words_[n >> 6];
   const uint64_t on_bit = (uint64_t(1) << (n & 63));
   bool was_on = word & on_bit;
   word |= on_bit;
   return was_on;
 }
 
-inline bool Mask::setOff(uint32_t n) {
-  uint64_t& word = words_[n >> 6];
+inline bool Mask::setOff(uint32_t n)
+{
+  uint64_t & word = words_[n >> 6];
   const uint64_t on_bit = (uint64_t(1) << (n & 63));
   bool was_on = word & on_bit;
   word &= ~(on_bit);
   return was_on;
 }
 
-inline void Mask::set(uint32_t n, bool On) {
+inline void Mask::set(uint32_t n, bool On)
+{
 #if 1  // switch between branchless
-  auto& word = words_[n >> 6];
+  auto & word = words_[n >> 6];
   n &= 63;
   word &= ~(uint64_t(1) << n);
   word |= uint64_t(On) << n;

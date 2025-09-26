@@ -4,42 +4,45 @@
 
 #include "benchmark_utils.hpp"
 
-static void Octomap_Create(benchmark::State& state) {
-  const auto& params = TestParameters[state.range(0)];
+static void Octomap_Create(benchmark::State & state)
+{
+  const auto & params = TestParameters[state.range(0)];
   auto cloud = ReadCloud(params.filename);
 
   for (auto _ : state) {
     octomap::OcTree tree(params.voxel_size);
-    for (const auto& point : *cloud) {
+    for (const auto & point : *cloud) {
       octomap::point3d endpoint(point.x, point.y, point.z);
       tree.updateNode(endpoint, true);  // integrate 'occupied' measurement
     }
   }
 }
 
-static void Octomap_Update(benchmark::State& state) {
-  const auto& params = TestParameters[state.range(0)];
+static void Octomap_Update(benchmark::State & state)
+{
+  const auto & params = TestParameters[state.range(0)];
   auto cloud = ReadCloud(params.filename);
 
   octomap::OcTree tree(params.voxel_size);
-  for (const auto& point : *cloud) {
+  for (const auto & point : *cloud) {
     octomap::point3d endpoint(point.x, point.y, point.z);
     tree.updateNode(endpoint, true);  // integrate 'occupied' measurement
   }
   for (auto _ : state) {
-    for (const auto& point : *cloud) {
+    for (const auto & point : *cloud) {
       octomap::point3d endpoint(point.x, point.y, point.z);
       tree.updateNode(endpoint, true);  // integrate 'occupied' measurement
     }
   }
 }
 
-static void Octomap_IterateAllCells(benchmark::State& state) {
-  const auto& params = TestParameters[state.range(0)];
+static void Octomap_IterateAllCells(benchmark::State & state)
+{
+  const auto & params = TestParameters[state.range(0)];
   auto cloud = ReadCloud(params.filename);
 
   octomap::OcTree tree(params.voxel_size);
-  for (const auto& point : *cloud) {
+  for (const auto & point : *cloud) {
     octomap::point3d endpoint(point.x, point.y, point.z);
     tree.updateNode(endpoint, true);  // integrate 'occupied' measurement
   }

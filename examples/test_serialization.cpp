@@ -3,7 +3,8 @@
 #include "bonxai/bonxai.hpp"
 #include "bonxai/serialization.hpp"
 
-int main() {
+int main()
+{
   const double VOXEL_RESOLUTION = 0.1;
 
   Bonxai::VoxelGrid<int> grid(VOXEL_RESOLUTION);
@@ -47,7 +48,7 @@ int main() {
     for (double y = -0.5; y < 0.5; y += VOXEL_RESOLUTION) {
       for (double z = -0.5; z < 0.5; z += VOXEL_RESOLUTION) {
         Bonxai::CoordT coord = grid.posToCoord(x, y, z);
-        int* value_ptr = new_accessor.value(coord);
+        int * value_ptr = new_accessor.value(coord);
         if (!value_ptr || *value_ptr != count) {
           std::cout << " Problem at cell " << x << " " << y << " " << z << std::endl;
           everything_fine = false;

@@ -18,14 +18,16 @@
 #include <memory>
 #endif
 
-namespace Bonxai {
+namespace Bonxai
+{
 /**
  * Serialize a grid to ostream. Easy :)
  */
-template <typename DataT>
-inline void Serialize(std::ostream& out, const VoxelGrid<DataT>& grid);
+template<typename DataT>
+inline void Serialize(std::ostream & out, const VoxelGrid<DataT> & grid);
 
-struct HeaderInfo {
+struct HeaderInfo
+{
   std::string type_name;
   int inner_bits = 0;
   int leaf_bits = 0;
@@ -44,65 +46,70 @@ inline HeaderInfo GetHeaderInfo(std::string header);
  * @brief Deserialize create a grid. Note that template arguments need to be
  * consistent with HeaderInfo
  */
-template <typename DataT>
-inline VoxelGrid<DataT> Deserialize(std::istream& input, HeaderInfo info);
+template<typename DataT>
+inline VoxelGrid<DataT> Deserialize(std::istream & input, HeaderInfo info);
 
 //---------------------------------------------------------
-namespace details {
+namespace details
+{
 #ifdef __GNUG__
-inline std::string demangle(const char* name) {
+inline std::string demangle(const char * name)
+{
   int status = -4;  // some arbitrary value to eliminate the compiler warning
 
-  std::unique_ptr<char, void (*)(void*)> res{
-      abi::__cxa_demangle(name, NULL, NULL, &status), std::free};
+  std::unique_ptr<char, void (*)(void *)> res{
+    abi::__cxa_demangle(name, NULL, NULL, &status), std::free};
   return (status == 0) ? res.get() : name;
 }
 
 #else
 
 // does nothing if not g++
-inline std::string demangle(const char* name) {
+inline std::string demangle(const char * name)
+{
   return name;
 }
 #endif
 
 }  // namespace details
 
-template <typename T>
-inline void Write(std::ostream& out, const T& val) {
+template<typename T>
+inline void Write(std::ostream & out, const T & val)
+{
   static_assert(std::is_trivially_copyable_v<T>, "Must be trivially copyable");
-  out.write(reinterpret_cast<const char*>(&val), sizeof(T));
+  out.write(reinterpret_cast<const char *>(&val), sizeof(T));
 }
 
-template <typename DataT>
-inline void Serialize(std::ostream& out, const VoxelGrid<DataT>& grid) {
+template<typename DataT>
+inline void Serialize(std::ostream & out, const VoxelGrid<DataT> & grid)
+{
   static_assert(std::is_trivially_copyable_v<DataT>, "DataT must be trivially copyable");
 
   char header[256];
   std::string type_name = details::demangle(typeid(DataT).name());
 
   sprintf(
-      header, "Bonxai::VoxelGrid<%s,%d,%d>(%lf)\n", type_name.c_str(), grid.innetBits(),
-      grid.leafBits(), grid.voxelSize());
+    header, "Bonxai::VoxelGrid<%s,%d,%d>(%lf)\n", type_name.c_str(), grid.innetBits(),
+    grid.leafBits(), grid.voxelSize());
 
   out.write(header, std::strlen(header));
 
   //------------
   Write(out, uint32_t(grid.rootMap().size()));
 
-  for (const auto& it : grid.rootMap()) {
-    const CoordT& root_coord = it.first;
+  for (const auto & it : grid.rootMap()) {
+    const CoordT & root_coord = it.first;
     Write(out, root_coord.x);
     Write(out, root_coord.y);
     Write(out, root_coord.z);
 
-    const auto& inner_grid = it.second;
+    const auto & inner_grid = it.second;
     for (size_t w = 0; w < inner_grid.mask().wordCount(); w++) {
       Write(out, inner_grid.mask().getWord(w));
     }
     for (auto inner = inner_grid.mask().beginOn(); inner; ++inner) {
       const uint32_t inner_index = *inner;
-      const auto& leaf_grid = *(inner_grid.cell(inner_index));
+      const auto & leaf_grid = *(inner_grid.cell(inner_index));
 
       for (size_t w = 0; w < leaf_grid.mask().wordCount(); w++) {
         Write(out, leaf_grid.mask().getWord(w));
@@ -115,15 +122,17 @@ inline void Serialize(std::ostream& out, const VoxelGrid<DataT>& grid) {
   }
 }
 
-template <typename T>
-inline T Read(std::istream& input) {
+template<typename T>
+inline T Read(std::istream & input)
+{
   T out;
   static_assert(std::is_trivially_copyable_v<T>, "Must be trivially copyable");
-  input.read(reinterpret_cast<char*>(&out), sizeof(T));
+  input.read(reinterpret_cast<char *>(&out), sizeof(T));
   return out;
 }
 
-inline HeaderInfo GetHeaderInfo(std::string header) {
+inline HeaderInfo GetHeaderInfo(std::string header)
+{
   const std::string expected_prefix = "Bonxai::VoxelGrid<";
   if (header.rfind(expected_prefix, 0) != 0) {
     throw std::runtime_error("Header wasn't recognized");
@@ -150,8 +159,9 @@ inline HeaderInfo GetHeaderInfo(std::string header) {
   return info;
 }
 
-template <typename DataT>
-inline VoxelGrid<DataT> Deserialize(std::istream& input, HeaderInfo info) {
+template<typename DataT>
+inline VoxelGrid<DataT> Deserialize(std::istream & input, HeaderInfo info)
+{
   std::string type_name = details::demangle(typeid(DataT).name());
   if (type_name != info.type_name) {
     throw std::runtime_error("DataT does not match");
@@ -172,17 +182,17 @@ inline VoxelGrid<DataT> Deserialize(std::istream& input, HeaderInfo info) {
     auto inner_it = grid.rootMap().find(root_coord);
     if (inner_it == grid.rootMap().end()) {
       inner_it = grid.rootMap()
-                     .insert({root_coord, typename VoxelGrid<DataT>::InnerGrid(info.inner_bits)})
-                     .first;
+        .insert({root_coord, typename VoxelGrid<DataT>::InnerGrid(info.inner_bits)})
+        .first;
     }
-    auto& inner_grid = inner_it->second;
+    auto & inner_grid = inner_it->second;
 
     for (size_t w = 0; w < inner_grid.mask().wordCount(); w++) {
       uint64_t word = Read<uint64_t>(input);
       inner_grid.mask().setWord(w, word);
     }
     for (auto inner = inner_grid.mask().beginOn(); inner; ++inner) {
-      auto& leaf_grid = inner_grid.cell(*inner);
+      auto & leaf_grid = inner_grid.cell(*inner);
       leaf_grid = grid.allocateLeafGrid();
 
       for (size_t w = 0; w < leaf_grid->mask().wordCount(); w++) {
