@@ -3,6 +3,7 @@
 #include <eigen3/Eigen/Geometry>
 #include <unordered_set>
 #include <unordered_map>
+#include <array>
 
 #include "bonxai/bonxai.hpp"
 
@@ -164,6 +165,17 @@ private:
   std::vector<CoordT> _hit_coords;
 
   mutable Bonxai::VoxelGrid<CellT>::Accessor _accessor;
+
+  // Spatial Neighbor Lookup Optimization (#2)
+  // Pre-computed neighbor direction arrays - avoid repeated array creation
+  static constexpr size_t MAX_NEIGHBORS_6 = 6;
+  static constexpr size_t MAX_NEIGHBORS_26 = 26;
+  static const std::array<CoordT, MAX_NEIGHBORS_6> NEIGHBOR_DIRS_6;
+  static const std::array<CoordT, MAX_NEIGHBORS_26> NEIGHBOR_DIRS_26;
+
+  // Thread-local caches for neighbor lookups to avoid repeated allocations
+  static thread_local std::vector<CoordT> _neighbor_coords_cache;
+  static thread_local std::vector<const CellT *> _neighbor_cells_cache;
 
   struct StagingInfo
   {
