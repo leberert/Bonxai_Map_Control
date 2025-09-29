@@ -117,20 +117,42 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
 
   // Fractional accumulation (optional)
   if (_options.fractional_hits) {
-    // Add a fraction of prob_hit_log so cumulative pending equals one full hit after required_observations.
+    // Effective required observations for fractional accumulation can differ for elevated points under
+    // the semantic override of min_neighbor_support==2 (fixed 2 observations).
+    int32_t effective_required = std::max<int32_t>(1, _options.required_observations);
+    const double tmp_point_z = _grid.coordToPos(coord).z; // temp to avoid recomputing later if not cached
+    if (tmp_point_z > 2.0 && _options.min_neighbor_support == 2) {
+      // Elevated strict mode: require one extra observation beyond required_observations
+      effective_required = std::max<int32_t>(2, _options.required_observations + 1);
+    }
     st.pending_log = std::min(
-      st.pending_log + (_options.prob_hit_log / std::max<int32_t>(1, _options.required_observations)),
+      st.pending_log + (_options.prob_hit_log / effective_required),
       _options.prob_hit_log * 4);   // clamp fractional accumulation to avoid runaway (heuristic)
   }
 
+  // Determine elevation status once (used by both spatial and temporal logic)
+  const double point_z_current = _grid.coordToPos(coord).z;
+  const bool is_elevated = point_z_current > 2.0; // Above threshold considered elevated
+
+
   // Enhanced spatial neighbor support with noise filtering - OPTIMIZED VERSION
   bool spatial_ok = (_options.min_neighbor_support == 0);
-  if (!spatial_ok && st.popcnt >= _options.required_observations) {
+  // Spatial neighbor evaluation gate: normally waits for required_observations.
+  // For min_neighbor_support==2 and elevated, require (required_observations + 1) observations before spatial test.
+  // For min_neighbor_support==1 and elevated we allow spatial test as soon as we have 1 observation (popcnt>=1).
+  uint8_t spatial_obs_gate = _options.required_observations;
+  if (is_elevated) {
+    if (_options.min_neighbor_support == 1) {
+      spatial_obs_gate = 1; // evaluate neighbors early to allow immediate spatial confirmation
+    } else if (_options.min_neighbor_support == 2) {
+      // Strict elevated mode: need required_observations + 1 frames before neighbor evaluation
+      spatial_obs_gate = std::max<uint8_t>(2, static_cast<uint8_t>(_options.required_observations + 1));
+    }
+  }
+
+  if (!spatial_ok && st.popcnt >= spatial_obs_gate) {
     uint8_t support = 0;
     uint8_t staging_support = 0;
-
-    // OPTIMIZATION: Reuse member accessor instead of creating new one (expensive!)
-    // This avoids the costly createAccessor() call for every point
 
     // OPTIMIZATION: Use pre-allocated thread-local caches to avoid repeated allocations
     _neighbor_coords_cache.clear();
@@ -165,18 +187,16 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
         }
       } else {
         // OPTIMIZATION: Use find() instead of operator[] to avoid unnecessary insertions
-        if (auto sit = _staging.find(ncoord);
-          sit != _staging.end() && sit->second.popcnt >= _options.required_observations)
         {
-          staging_support++;
+          auto sit = _staging.find(ncoord);
+          if (sit != _staging.end() && sit->second.popcnt >= _options.required_observations) {
+            staging_support++;
+          }
         }
       }
     }
 
     // For potentially isolated noise points (especially elevated ones), apply stricter criteria
-    const double point_z = _grid.coordToPos(coord).z;
-    bool is_elevated = point_z > 2.0; // Above 2.0m is considered elevated
-
     if (is_elevated && support == 0 && staging_support == 0) {
       // OPTIMIZATION: For elevated isolated points, check extended 26-connectivity neighborhood
       uint8_t extended_support = 0;
@@ -209,10 +229,11 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
           }
         } else {
           // OPTIMIZATION: Efficient staging lookup with structured binding
-          if (auto sit = _staging.find(ncoord);
-            sit != _staging.end() && sit->second.popcnt >= _options.required_observations)
           {
-            extended_staging++;
+            auto sit = _staging.find(ncoord);
+            if (sit != _staging.end() && sit->second.popcnt >= _options.required_observations) {
+              extended_staging++;
+            }
           }
         }
       }
@@ -230,26 +251,37 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
 
   // Enhanced temporal self-persistence with noise filtering
   if (!spatial_ok) {
-    const double point_z = _grid.coordToPos(coord).z;
-    bool is_elevated = point_z > 2.0; // Above 2.0m is considered elevated
-
-    // Calculate minimum persistence threshold based on required_observations and elevation
-    uint8_t persistence_threshold;
-    if (is_elevated) {
-      // Elevated points need more evidence regardless of required_observations
-      persistence_threshold = std::max<uint8_t>(2, _options.required_observations);
-    } else {
-      // Ground-level points: allow promotion with required observations even without spatial support
-      // This breaks the chicken-and-egg problem for fresh maps
-      persistence_threshold = _options.required_observations;
+    bool allow_temporal_fallback_elevated = true;
+    if (is_elevated && (_options.min_neighbor_support == 1 || _options.min_neighbor_support == 2)) {
+      // In new semantics, elevated points with neighbor support modes 1 or 2 must not rely solely on temporal fallback
+      allow_temporal_fallback_elevated = false;
     }
 
-    if (st.popcnt >= persistence_threshold) {
-      spatial_ok = true;
+    if (allow_temporal_fallback_elevated || !is_elevated) {
+      // Calculate minimum persistence threshold based on required_observations and elevation
+      uint8_t persistence_threshold;
+      if (is_elevated) {
+        // Elevated points (only if allowed) need more evidence regardless of required_observations
+        persistence_threshold = std::max<uint8_t>(2, _options.required_observations);
+      } else {
+        // Ground-level points: allow promotion with required observations even without spatial support
+        persistence_threshold = _options.required_observations;
+      }
+
+      if (st.popcnt >= persistence_threshold) {
+        spatial_ok = true;
+      }
     }
   }
 
-  if (st.popcnt >= std::max<uint8_t>(1, _options.required_observations) && spatial_ok) {
+  // Promotion gating: ensure observation threshold is met. For elevated with min_neighbor_support==2 enforce 2 obs.
+  uint8_t promote_obs_gate = std::max<uint8_t>(1, _options.required_observations);
+  if (is_elevated && _options.min_neighbor_support == 2) {
+    // Elevated strict mode: promote only after required_observations + 1 observations
+    promote_obs_gate = std::max<uint8_t>(2, static_cast<uint8_t>(_options.required_observations + 1));
+  }
+
+  if (st.popcnt >= promote_obs_gate && spatial_ok) {
     int32_t add_log = _options.fractional_hits ? st.pending_log : _options.prob_hit_log;
     add_log = std::max<int32_t>(add_log, _options.prob_hit_log); // ensure at least one full hit effect
     cell->probability_log = std::min(cell->probability_log + add_log, _options.clamp_max_log);

@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <array>
+#include <cmath>
 
 #include "bonxai/bonxai.hpp"
 
@@ -81,9 +82,16 @@ public:
     // Valid range: 1..64 (implementation currently uses 64-bit mask)
     uint8_t window_frames = 32;
     // Number of observations (bits set in mask) required to promote to occupied
-    uint8_t required_observations = 3;
-    // Minimum number of already occupied or staging neighbours (6-connectivity) required
-    // to allow promotion. 0 disables spatial support requirement.
+    uint8_t required_observations = 1;
+  // Minimum number of already occupied or staging neighbours (6-connectivity) required
+  // to allow promotion. 0 disables spatial support requirement.
+  // Special semantics for elevated points (> ~2m) introduced 2025-09:
+  //   0 : Spatial support disabled (temporal fallback applies to all points)
+  //   1 : Elevated voxels MUST have >=1 supporting neighbour (no pure temporal fallback for elevated).
+  //       Ground voxels may still be promoted via temporal fallback.
+  //   2 : Elevated voxels MUST have spatial support AND at least (required_observations + 1) observations (min 2).
+  //       Temporal-only path disabled for elevated. Ground voxels unchanged.
+  //  >2 : Classic behavior – require that many neighbours; temporal fallback (including elevated) still active.
     uint8_t min_neighbor_support = 0;
     // Frames after last observation before staged voxel is abandoned (>= window_frames advisable).
     uint16_t stale_frames = 64;
