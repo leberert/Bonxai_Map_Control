@@ -393,7 +393,7 @@ void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud)
         (diag.tracked_count > 100000);
 
       if (should_log && (frame_count - last_logged_frame) >= 10) {
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           get_logger(),
           "Map stats: cells=%zu mem=%.1fMB staging=%zu tracked=%zu frame=%lu",
           active_cells, mem_usage / 1048576.0,
