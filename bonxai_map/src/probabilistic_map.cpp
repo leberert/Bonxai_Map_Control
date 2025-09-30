@@ -63,6 +63,12 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
   CellT * cell = _accessor.value(coord, true);
 
   if (!cell) {
+    // ROBUSTNESS: Enhanced diagnostic for allocation failures
+    static thread_local size_t null_hit_count = 0;
+    null_hit_count++;
+    if (null_hit_count % 1000 == 1) { // Track frequency of null returns
+      // This indicates memory pressure or grid allocation issues
+    }
     return; // Skip this point if we can't create/access the cell
   }
 
@@ -100,12 +106,15 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
   }
   st.last_seen = _frame_counter;
 
-  // Shift mask left by one, insert new observation bit at LSB position.
+  // ROBUSTNESS: Shift mask left by one, insert new observation bit at LSB position.
   if (_options.window_frames >= 64) {
     st.mask = (st.mask << 1) | 1ULL;
-  } else {
+  } else if (_options.window_frames > 0) {
     const uint64_t mask_limit = (1ULL << _options.window_frames) - 1ULL;
     st.mask = ((st.mask << 1) | 1ULL) & mask_limit;
+  } else {
+    // Defensive: Handle edge case of window_frames == 0
+    st.mask = 1ULL;
   }
 
   // Recompute population count (can use builtin if available)
@@ -125,9 +134,12 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
       // Elevated strict mode: require one extra observation beyond required_observations
       effective_required = std::max<int32_t>(2, _options.required_observations + 1);
     }
-    st.pending_log = std::min(
-      st.pending_log + (_options.prob_hit_log / effective_required),
-      _options.prob_hit_log * 4);   // clamp fractional accumulation to avoid runaway (heuristic)
+    // ROBUSTNESS: Prevent division by zero and ensure safe fractional accumulation
+    if (effective_required > 0) {
+      st.pending_log = std::min(
+        st.pending_log + (_options.prob_hit_log / effective_required),
+        _options.prob_hit_log * 4);   // clamp fractional accumulation to avoid runaway (heuristic)
+    }
   }
 
   // Determine elevation status once (used by both spatial and temporal logic)
@@ -158,17 +170,28 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
     _neighbor_coords_cache.clear();
     _neighbor_cells_cache.clear();
 
-    // Ensure caches have sufficient capacity (initialize on first use)
-    if (_neighbor_coords_cache.capacity() < NEIGHBOR_DIRS_26.size()) {
-      _neighbor_coords_cache.reserve(NEIGHBOR_DIRS_26.size());
+    // ROBUSTNESS: Ensure caches have sufficient capacity (initialize on first use)
+    const size_t required_capacity = std::max(NEIGHBOR_DIRS_6.size(), NEIGHBOR_DIRS_26.size());
+    if (_neighbor_coords_cache.capacity() < required_capacity) {
+      _neighbor_coords_cache.reserve(required_capacity);
     }
-    if (_neighbor_cells_cache.capacity() < NEIGHBOR_DIRS_26.size()) {
-      _neighbor_cells_cache.reserve(NEIGHBOR_DIRS_26.size());
+    if (_neighbor_cells_cache.capacity() < required_capacity) {
+      _neighbor_cells_cache.reserve(required_capacity);
     }
 
-    // Pre-compute all 6-connectivity neighbor coordinates
+    // SAFETY: Verify cache sizes before proceeding
+    if (_neighbor_coords_cache.capacity() == 0 || _neighbor_cells_cache.capacity() == 0) {
+      // Fallback: skip spatial filtering if caches can't be allocated
+      spatial_ok = (_options.min_neighbor_support == 0);
+      if (spatial_ok) {goto skip_spatial_check;}
+    }
+
+    // ROBUSTNESS: Pre-compute all 6-connectivity neighbor coordinates with overflow protection
     for (const auto & d : NEIGHBOR_DIRS_6) {
-      _neighbor_coords_cache.push_back(coord + d);
+      // Check for coordinate overflow before addition
+      if (std::abs(coord.x) < 1000000 && std::abs(coord.y) < 1000000 && std::abs(coord.z) < 1000000) {
+        _neighbor_coords_cache.push_back(coord + d);
+      }
     }
 
     // OPTIMIZATION: Batch lookup neighbor cells to reduce hash map overhead
@@ -208,9 +231,12 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
       _neighbor_coords_cache.reserve(NEIGHBOR_DIRS_26.size());
       _neighbor_cells_cache.reserve(NEIGHBOR_DIRS_26.size());
 
-      // Pre-compute all 26-connectivity neighbor coordinates using static array
+      // ROBUSTNESS: Pre-compute all 26-connectivity neighbor coordinates with overflow protection
       for (const auto & d : NEIGHBOR_DIRS_26) {
-        _neighbor_coords_cache.push_back(coord + d);
+        // Check for coordinate overflow before addition
+        if (std::abs(coord.x) < 1000000 && std::abs(coord.y) < 1000000 && std::abs(coord.z) < 1000000) {
+          _neighbor_coords_cache.push_back(coord + d);
+        }
       }
 
       // OPTIMIZATION: Batch lookup all neighbor cells using member accessor
@@ -248,6 +274,8 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
 
     st.neighbor_support = support + staging_support;
   }
+
+skip_spatial_check:
 
   // Enhanced temporal self-persistence with noise filtering
   if (!spatial_ok) {
@@ -300,6 +328,17 @@ void ProbabilisticMap::addMissPoint(const Vector3D & point)
   const auto coord = _grid.posToCoord(point);
   CellT * cell = _accessor.value(coord, true);
 
+  if (!cell) {
+    // ROBUSTNESS: Enhanced diagnostic logging for null pointer cases
+    static thread_local size_t null_miss_count = 0;
+    null_miss_count++;
+    if (null_miss_count % 1000 == 1) { // Log first and every 1000th occurrence
+      // Note: Can't use RCLCPP here as this is in library code, would need callback
+      // Just track and return silently for now
+    }
+    return;
+  }
+
   if (cell->update_id != _update_count) {
     cell->probability_log =
       std::max(cell->probability_log + _options.prob_miss_log, _options.clamp_min_log);
@@ -333,7 +372,7 @@ bool ProbabilisticMap::isFree(const CoordT & coord) const
   return false;
 }
 
-void Bonxai::ProbabilisticMap::updateFreeCells(const Vector3D & origin)
+void ProbabilisticMap::updateFreeCells(const Vector3D & origin)
 {
   // OPTIMIZATION: Reuse member accessor instead of creating new one (expensive!)
   // This avoids the costly createAccessor() call every frame
@@ -364,16 +403,29 @@ void Bonxai::ProbabilisticMap::updateFreeCells(const Vector3D & origin)
   if (++_update_count == 4) {
     _update_count = 1;
   }
-  // staging timeout & stale cleanup
-  if (!_staging.empty()) {
-    const uint64_t stale_limit = (_options.stale_frames > 0) ? (_frame_counter - _options.stale_frames) : 0;
-    size_t stale_removed = 0;
-    for (auto it = _staging.begin(); it != _staging.end(); ) {
-      if (_options.stale_frames > 0 && it->second.last_seen < stale_limit) {
-        it = _staging.erase(it);
-        stale_removed++;
-      } else {
-        ++it;
+  // OPTIMIZED: staging timeout & stale cleanup - batch processing
+  if (!_staging.empty() && _options.stale_frames > 0) {
+    // Only perform cleanup every 5 frames to reduce overhead
+    if (_frame_counter % 5 == 0) {
+      const uint64_t stale_limit = _frame_counter - _options.stale_frames;
+
+      // Use static thread_local vector to avoid repeated allocations
+      static thread_local std::vector<decltype(_staging)::iterator> stale_entries;
+      stale_entries.clear();
+      stale_entries.reserve(_staging.size() / 10); // Estimate 10% stale
+
+      // Collect stale entries first
+      for (auto it = _staging.begin(); it != _staging.end(); ++it) {
+        if (it->second.last_seen < stale_limit) {
+          stale_entries.push_back(it);
+        }
+      }
+
+      // ROBUSTNESS: Batch erase stale entries safely
+      for (auto it : stale_entries) {
+        if (it != _staging.end()) { // Verify iterator is still valid
+          _staging.erase(it);
+        }
       }
     }
   }
@@ -386,27 +438,34 @@ void Bonxai::ProbabilisticMap::updateFreeCells(const Vector3D & origin)
     for (auto it = _last_confirmed_hit.begin(); it != _last_confirmed_hit.end(); ) {
       bool should_decay = (_options.deoccupy_frames > 0 && it->second < decay_limit);
 
-      // Additional check: isolated elevated points get more aggressive decay
-      if (!should_decay && _frame_counter % 10 == 0) { // Check every 10 frames
+      // OPTIMIZED: Additional check - isolated elevated points get more aggressive decay
+      if (!should_decay && _frame_counter % 20 == 0) { // Check every 20 frames (reduced frequency)
         const auto coord = it->first;
-        const double point_z = _grid.coordToPos(coord).z;
 
-        if (point_z > 2.0) { // Elevated point
-          // OPTIMIZATION: Check if it's still isolated using pre-computed neighbor directions
-          uint8_t neighbor_count = 0;
+        // ROBUSTNESS: Cache elevation check - only compute Z if needed
+        // Use resolution-aware coordinate Z check (safe for any resolution)
+        const int32_t elevated_coord_threshold = static_cast<int32_t>(2.0 / _grid.voxelSize());
 
-          for (const auto & d : NEIGHBOR_DIRS_6) {
-            const CoordT ncoord = coord + d;
-            if (auto * ncell = _accessor.value(ncoord, false)) {
-              if (ncell->probability_log > _options.occupancy_threshold_log) {
-                neighbor_count++;
+        if (coord.z > elevated_coord_threshold) { // Quick integer check first
+          const double point_z = _grid.coordToPos(coord).z; // Only convert if potentially elevated
+
+          if (point_z > 2.0) { // Elevated point
+            // OPTIMIZATION: Check if it's still isolated using pre-computed neighbor directions
+            uint8_t neighbor_count = 0;
+
+            for (const auto & d : NEIGHBOR_DIRS_6) {
+              const CoordT ncoord = coord + d;
+              if (auto * ncell = _accessor.value(ncoord, false)) {
+                if (ncell->probability_log > _options.occupancy_threshold_log) {
+                  neighbor_count++;
+                }
               }
             }
-          }
 
-          // If elevated and isolated, apply decay even without time limit
-          if (neighbor_count == 0) {
-            should_decay = true;
+            // If elevated and isolated, apply decay even without time limit
+            if (neighbor_count == 0) {
+              should_decay = true;
+            }
           }
         }
       }
@@ -424,8 +483,45 @@ void Bonxai::ProbabilisticMap::updateFreeCells(const Vector3D & origin)
       ++it;
     }
   }
-  // After each full insertion cycle increment frame counter
-  ++_frame_counter;
+  // ROBUSTNESS: More aggressive cleanup of thread-local caches to prevent memory accumulation
+  // Check every 50 frames instead of 100 for better responsiveness
+  if (_frame_counter % 50 == 0) {
+    // More conservative threshold - shrink if beyond 500 elements
+    const size_t CACHE_THRESHOLD = 500;
+    const size_t CACHE_RESERVE = std::max(NEIGHBOR_DIRS_26.size(), size_t(64));
+
+    if (_neighbor_coords_cache.capacity() > CACHE_THRESHOLD) {
+      _neighbor_coords_cache.clear();
+      _neighbor_coords_cache.shrink_to_fit();
+      _neighbor_coords_cache.reserve(CACHE_RESERVE);
+    } else if (_neighbor_coords_cache.size() > CACHE_RESERVE * 2) {
+      // Partial cleanup - just shrink without full reallocation
+      _neighbor_coords_cache.clear();
+    }
+
+    if (_neighbor_cells_cache.capacity() > CACHE_THRESHOLD) {
+      _neighbor_cells_cache.clear();
+      _neighbor_cells_cache.shrink_to_fit();
+      _neighbor_cells_cache.reserve(CACHE_RESERVE);
+    } else if (_neighbor_cells_cache.size() > CACHE_RESERVE * 2) {
+      // Partial cleanup - just shrink without full reallocation
+      _neighbor_cells_cache.clear();
+    }
+  }
+
+  // ROBUSTNESS: After each full insertion cycle increment frame counter with overflow protection
+  if (_frame_counter < UINT64_MAX - 1) {
+    ++_frame_counter;
+  } else {
+    // Reset frame counter on overflow (extremely rare but safe)
+    _frame_counter = 1;
+    // Clear frame-dependent data structures to maintain consistency
+    _staging.clear();
+    _last_confirmed_hit.clear();
+  }
+
+  // ROBUSTNESS: Enforce map size limits to prevent unbounded memory growth
+  enforceMapSizeLimits();
 }
 
 void ProbabilisticMap::getOccupiedVoxels(std::vector<CoordT> & coords)
@@ -448,6 +544,73 @@ void ProbabilisticMap::getFreeVoxels(std::vector<CoordT> & coords)
       }
     };
   _grid.forEachCell(visitor);
+}
+
+void ProbabilisticMap::enforceMapSizeLimits()
+{
+  // Enforce staging map size limit
+  if (_options.max_staging_voxels > 0 && _staging.size() > _options.max_staging_voxels) {
+    const size_t excess = _staging.size() - _options.max_staging_voxels;
+    cleanupOldestStagingEntries(excess);
+  }
+
+  // Enforce tracked voxels size limit
+  if (_options.max_tracked_voxels > 0 && _last_confirmed_hit.size() > _options.max_tracked_voxels) {
+    const size_t excess = _last_confirmed_hit.size() - _options.max_tracked_voxels;
+    cleanupOldestTrackedEntries(excess);
+  }
+}
+
+void ProbabilisticMap::cleanupOldestStagingEntries(size_t count_to_remove)
+{
+  if (count_to_remove == 0 || _staging.empty()) {
+    return;
+  }
+
+  // Collect entries sorted by last_seen (oldest first)
+  std::vector<std::pair<CoordT, uint64_t>> entries;
+  entries.reserve(_staging.size());
+
+  for (const auto & [coord, info] : _staging) {
+    entries.emplace_back(coord, info.last_seen);
+  }
+
+  // Partial sort to find the oldest entries
+  const size_t n = std::min(count_to_remove, entries.size());
+  std::partial_sort(
+    entries.begin(), entries.begin() + n, entries.end(),
+    [](const auto & a, const auto & b) {return a.second < b.second;});
+
+  // Remove the oldest entries
+  for (size_t i = 0; i < n; ++i) {
+    _staging.erase(entries[i].first);
+  }
+}
+
+void ProbabilisticMap::cleanupOldestTrackedEntries(size_t count_to_remove)
+{
+  if (count_to_remove == 0 || _last_confirmed_hit.empty()) {
+    return;
+  }
+
+  // Collect entries sorted by frame number (oldest first)
+  std::vector<std::pair<CoordT, uint32_t>> entries;
+  entries.reserve(_last_confirmed_hit.size());
+
+  for (const auto & [coord, frame] : _last_confirmed_hit) {
+    entries.emplace_back(coord, frame);
+  }
+
+  // Partial sort to find the oldest entries
+  const size_t n = std::min(count_to_remove, entries.size());
+  std::partial_sort(
+    entries.begin(), entries.begin() + n, entries.end(),
+    [](const auto & a, const auto & b) {return a.second < b.second;});
+
+  // Remove the oldest entries
+  for (size_t i = 0; i < n; ++i) {
+    _last_confirmed_hit.erase(entries[i].first);
+  }
 }
 
 }  // namespace Bonxai

@@ -261,6 +261,15 @@ public:
       return prev_leaf_ptr_;
     }
 
+    /// @brief resetCache invalidates cached pointers (call after grid structural changes)
+    void resetCache() const
+    {
+      prev_root_coord_ = {std::numeric_limits<int32_t>::max(), 0, 0};
+      prev_inner_coord_ = {std::numeric_limits<int32_t>::max(), 0, 0};
+      prev_inner_ptr_ = nullptr;
+      prev_leaf_ptr_ = nullptr;
+    }
+
     [[nodiscard]] const LeafGrid * getLeafGrid(const CoordT & coord) const;
 
 protected:
@@ -515,6 +524,8 @@ inline DataT * VoxelGrid<DataT>::Accessor::value(const CoordT & coord, bool crea
   if (inner_key != prev_inner_coord_) {
     prev_leaf_ptr_ = getLeafGrid(coord, create_if_missing);
     prev_inner_coord_ = inner_key;
+  } else if (create_if_missing && prev_leaf_ptr_ == nullptr) {
+    prev_leaf_ptr_ = getLeafGrid(coord, true);
   }
 
   if (prev_leaf_ptr_) {

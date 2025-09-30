@@ -152,18 +152,74 @@ BonxaiServer::BonxaiServer(const rclcpp::NodeOptions & node_options)
   options.stale_frames = static_cast<uint16_t>(adv_stale_frames);
   options.deoccupy_frames = static_cast<uint16_t>(adv_deoccupy_frames);
   options.fractional_hits = adv_fractional_hits;
+
+  // ROBUSTNESS: Parameter validation and consistency checks
+  bool param_warnings = false;
+
+  // Validate probability values
+  if (prob_hit <= 0.5 || prob_hit >= 1.0) {
+    RCLCPP_WARN(get_logger(), "prob_hit=%.3f outside recommended range (0.5, 1.0)", prob_hit);
+    param_warnings = true;
+  }
+  if (prob_miss <= 0.0 || prob_miss >= 0.5) {
+    RCLCPP_WARN(get_logger(), "prob_miss=%.3f outside recommended range (0.0, 0.5)", prob_miss);
+    param_warnings = true;
+  }
+  if (thres_min >= thres_max) {
+    RCLCPP_ERROR(get_logger(), "clamp_min (%.3f) >= clamp_max (%.3f) - invalid configuration!", thres_min, thres_max);
+    param_warnings = true;
+  }
+
+  // Validate filter consistency
+  if (options.stale_frames > 0 && options.stale_frames < options.window_frames) {
+    RCLCPP_WARN(
+      get_logger(),
+      "stale_frames (%u) < window_frames (%u) - voxels may be removed before accumulating enough observations",
+      options.stale_frames, options.window_frames);
+    param_warnings = true;
+  }
+
+  if (options.required_observations > options.window_frames) {
+    RCLCPP_WARN(
+      get_logger(),
+      "required_observations (%u) > window_frames (%u) - voxels can never be promoted!",
+      options.required_observations, options.window_frames);
+    param_warnings = true;
+  }
+
+  if (options.min_neighbor_support > 6) {
+    RCLCPP_WARN(
+      get_logger(),
+      "min_neighbor_support (%u) > 6 - extremely strict (max 6 face neighbors available)",
+      options.min_neighbor_support);
+    param_warnings = true;
+  }
+
+  // Add robustness limits if not already set in config
+  if (adv_window_frames > 0) { // Check if user provided config
+    declare_parameter("filter.max_staging_voxels", 100000);
+    declare_parameter("filter.max_tracked_voxels", 200000);
+    auto max_staging = get_parameter("filter.max_staging_voxels").as_int();
+    auto max_tracked = get_parameter("filter.max_tracked_voxels").as_int();
+    options.max_staging_voxels = static_cast<uint32_t>(std::max(0, static_cast<int>(max_staging)));
+    options.max_tracked_voxels = static_cast<uint32_t>(std::max(0, static_cast<int>(max_tracked)));
+  }
+
   bonxai_->setOptions(options);
 
   // Concise startup summary of key parameters
   RCLCPP_INFO(
     get_logger(),
     "Startup params: res=%.3f max_range=%.2f hit=%.2f miss=%.2f clamp=[%.2f..%.2f] "
-    "filter{window=%u req=%u neigh=%u stale=%u deocc=%u frac=%s}",
+    "filter{window=%u req=%u neigh=%u stale=%u deocc=%u frac=%s} "
+    "limits{staging=%u tracked=%u}%s",
     res_, max_range_, prob_hit, prob_miss, thres_min, thres_max,
     static_cast<unsigned>(options.window_frames), static_cast<unsigned>(options.required_observations),
     static_cast<unsigned>(options.min_neighbor_support),
     static_cast<unsigned>(options.stale_frames), static_cast<unsigned>(options.deoccupy_frames),
-    options.fractional_hits ? "on" : "off");
+    options.fractional_hits ? "on" : "off",
+    options.max_staging_voxels, options.max_tracked_voxels,
+    param_warnings ? " [WARNINGS PRESENT - check above]" : "");
 
   if (latched_topics_) {
     RCLCPP_INFO(
@@ -235,14 +291,25 @@ void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud)
     return;
   }
 
-  // remove NaN and Inf values
+  // OPTIMIZED: remove NaN and Inf values with early termination
   size_t filtered_index = 0;
-  for (const auto & point : pc.points) {
-    if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z)) {
-      pc.points[filtered_index++] = point;
+  const size_t original_size = pc.points.size();
+
+  for (size_t i = 0; i < original_size; ++i) {
+    const auto & point = pc.points[i];
+    // OPTIMIZATION: Use likely() hint for branch prediction (most points are valid)
+    if (__builtin_expect(std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z), 1)) {
+      if (filtered_index != i) {
+        pc.points[filtered_index] = point;
+      }
+      ++filtered_index;
     }
   }
-  pc.resize(filtered_index);
+
+  // Only resize if we actually filtered out points
+  if (filtered_index != original_size) {
+    pc.resize(filtered_index);
+  }
 
   if (pc.points.empty()) {
     RCLCPP_WARN(get_logger(), "All points filtered out (NaN/Inf), skipping");
@@ -290,8 +357,14 @@ void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud)
       return;
     }
 
-    // Add safety checks and exception handling
+    // ROBUSTNESS: Comprehensive validation and error handling
     try {
+      // Additional validation before processing
+      if (pc.points.size() > 1000000) { // Prevent extremely large point clouds
+        RCLCPP_WARN(get_logger(), "Point cloud too large (%zu points), skipping", pc.points.size());
+        return;
+      }
+
       RCLCPP_DEBUG(get_logger(), "About to call insertPointCloud with %zu points", pc.points.size());
 
       if (max_range_ >= 0) {
@@ -302,6 +375,65 @@ void BonxaiServer::insertCloudCallback(const PointCloud2::ConstSharedPtr cloud)
       }
 
       RCLCPP_DEBUG(get_logger(), "insertPointCloud completed successfully");
+
+      // ROBUSTNESS: Memory pressure monitoring - log warnings when map grows large
+      const size_t active_cells = bonxai_->grid().activeCellsCount();
+      const size_t mem_usage = bonxai_->grid().memUsage();
+      const auto diag = bonxai_->getDiagnostics();
+
+      // Log memory usage every 100 frames or when it exceeds thresholds
+      static size_t frame_count = 0;
+      static size_t last_logged_frame = 0;
+      frame_count++;
+
+      const bool should_log = (frame_count % 100 == 0) ||
+        (active_cells > 5000000) ||                        // 5M cells
+        (mem_usage > 1000000000) ||                        // 1GB
+        (diag.staging_count > 50000) ||
+        (diag.tracked_count > 100000);
+
+      if (should_log && (frame_count - last_logged_frame) >= 10) {
+        RCLCPP_INFO(
+          get_logger(),
+          "Map stats: cells=%zu mem=%.1fMB staging=%zu tracked=%zu frame=%lu",
+          active_cells, mem_usage / 1048576.0,
+          diag.staging_count, diag.tracked_count, diag.frame_counter);
+        last_logged_frame = frame_count;
+
+        // Warn if approaching concerning levels
+        if (active_cells > 8000000) {
+          RCLCPP_WARN(
+            get_logger(),
+            "Map very large (%zu cells) - consider reducing sensor range or increasing resolution",
+            active_cells);
+        }
+        if (mem_usage > 2000000000) { // 2GB
+          RCLCPP_WARN(
+            get_logger(),
+            "High memory usage (%.1f GB) - map may need reset or optimization",
+            mem_usage / 1073741824.0);
+        }
+        if (diag.staging_count > opts.max_staging_voxels * 0.8) {
+          RCLCPP_WARN(
+            get_logger(),
+            "Staging map near limit (%zu / %u) - oldest entries will be purged",
+            diag.staging_count, opts.max_staging_voxels);
+        }
+        if (diag.tracked_count > opts.max_tracked_voxels * 0.8) {
+          RCLCPP_WARN(
+            get_logger(),
+            "Tracked voxels near limit (%zu / %u) - oldest entries will be purged",
+            diag.tracked_count, opts.max_tracked_voxels);
+        }
+      }
+
+    } catch (const std::bad_alloc & ex) {
+      RCLCPP_ERROR(get_logger(), "Memory allocation failed in insertPointCloud: %s", ex.what());
+      // Try to recover by resetting the map
+      bonxai_ = std::make_unique<BonxaiT>(res_);
+      auto current_options = bonxai_->options();
+      bonxai_->setOptions(current_options);
+      return;
     } catch (const std::exception & ex) {
       RCLCPP_ERROR(get_logger(), "Exception in insertPointCloud: %s", ex.what());
       return;
@@ -385,14 +517,30 @@ void BonxaiServer::publishAll(const rclcpp::Time & rostime)
 {
   const auto start_time = rclcpp::Clock{}.now();
   std::vector<Eigen::Vector3d> bonxai_result;
+
+  // ROBUSTNESS: Keep lock during extraction to prevent race with reset
   {
     std::lock_guard<std::mutex> lock(map_mutex_);
     if (!bonxai_) {
       RCLCPP_DEBUG(get_logger(), "publishAll called with null bonxai_");
       return;
     }
-    bonxai_->getOccupiedVoxels(bonxai_result);
+
+    // ROBUSTNESS: Safe extraction of occupied voxels with error handling
+    try {
+      bonxai_->getOccupiedVoxels(bonxai_result);
+
+      // Validate result size to prevent memory issues
+      if (bonxai_result.size() > 10000000) { // 10M voxels max
+        RCLCPP_WARN(get_logger(), "Too many occupied voxels (%zu), truncating", bonxai_result.size());
+        bonxai_result.resize(10000000);
+      }
+    } catch (const std::exception & ex) {
+      RCLCPP_ERROR(get_logger(), "Error getting occupied voxels: %s", ex.what());
+      return;
+    }
   }
+  // Lock released here - bonxai_result is now a safe local copy
 
   if (bonxai_result.size() <= 1) {
     RCLCPP_DEBUG(get_logger(), "Nothing to publish, bonxai is empty");
@@ -414,13 +562,23 @@ void BonxaiServer::publishAll(const rclcpp::Time & rostime)
         pcl_cloud.push_back(PCLPoint(voxel.x(), voxel.y(), voxel.z()));
       }
     }
-    PointCloud2 cloud;
-    pcl::toROSMsg(pcl_cloud, cloud);
 
-    cloud.header.frame_id = world_frame_id_;
-    cloud.header.stamp = rostime;
-    point_cloud_pub_->publish(cloud);
-    RCLCPP_DEBUG(get_logger(), "Published occupancy grid with %ld voxels", pcl_cloud.points.size());
+    // ROBUSTNESS: Validate PCL cloud before publishing
+    if (pcl_cloud.empty()) {
+      RCLCPP_DEBUG(get_logger(), "All voxels filtered by z-range, nothing to publish");
+      return;
+    }
+
+    PointCloud2 cloud;
+    try {
+      pcl::toROSMsg(pcl_cloud, cloud);
+      cloud.header.frame_id = world_frame_id_;
+      cloud.header.stamp = rostime;
+      point_cloud_pub_->publish(cloud);
+      RCLCPP_DEBUG(get_logger(), "Published occupancy grid with %ld voxels", pcl_cloud.points.size());
+    } catch (const std::exception & ex) {
+      RCLCPP_ERROR(get_logger(), "Error publishing point cloud: %s", ex.what());
+    }
   }
 }
 
@@ -434,9 +592,10 @@ bool BonxaiServer::resetSrv(
     auto current_options = bonxai_->options();
     bonxai_ = std::make_unique<BonxaiT>(res_);
     bonxai_->setOptions(current_options);
+    // No need to reset accessor - new map instance creates fresh internal state
   }
 
-  RCLCPP_INFO(get_logger(), "Cleared Bonxai");
+  RCLCPP_INFO(get_logger(), "Cleared Bonxai map and reset all internal structures");
   publishAll(rostime);
 
   return true;

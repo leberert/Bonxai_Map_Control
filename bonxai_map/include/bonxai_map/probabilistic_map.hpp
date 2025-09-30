@@ -83,15 +83,23 @@ public:
     uint8_t window_frames = 32;
     // Number of observations (bits set in mask) required to promote to occupied
     uint8_t required_observations = 1;
-  // Minimum number of already occupied or staging neighbours (6-connectivity) required
-  // to allow promotion. 0 disables spatial support requirement.
-  // Special semantics for elevated points (> ~2m) introduced 2025-09:
-  //   0 : Spatial support disabled (temporal fallback applies to all points)
-  //   1 : Elevated voxels MUST have >=1 supporting neighbour (no pure temporal fallback for elevated).
-  //       Ground voxels may still be promoted via temporal fallback.
-  //   2 : Elevated voxels MUST have spatial support AND at least (required_observations + 1) observations (min 2).
-  //       Temporal-only path disabled for elevated. Ground voxels unchanged.
-  //  >2 : Classic behavior – require that many neighbours; temporal fallback (including elevated) still active.
+
+    // --- Robustness limits ---
+    // Maximum number of voxels allowed in staging map (prevents unbounded growth)
+    // 0 = no limit (use with caution)
+    uint32_t max_staging_voxels = 100000;
+    // Maximum number of voxels tracked for deoccupancy
+    // 0 = no limit (use with caution)
+    uint32_t max_tracked_voxels = 200000;
+    // Minimum number of already occupied or staging neighbours (6-connectivity) required
+    // to allow promotion. 0 disables spatial support requirement.
+    // Special semantics for elevated points (> ~2m) introduced 2025-09:
+    //   0 : Spatial support disabled (temporal fallback applies to all points)
+    //   1 : Elevated voxels MUST have >=1 supporting neighbour (no pure temporal fallback for elevated).
+    //       Ground voxels may still be promoted via temporal fallback.
+    //   2 : Elevated voxels MUST have spatial support AND at least (required_observations + 1) observations (min 2).
+    //       Temporal-only path disabled for elevated. Ground voxels unchanged.
+    //  >2 : Classic behavior – require that many neighbours; temporal fallback (including elevated) still active.
     uint8_t min_neighbor_support = 0;
     // Frames after last observation before staged voxel is abandoned (>= window_frames advisable).
     uint16_t stale_frames = 64;
@@ -163,6 +171,25 @@ public:
     }
   }
 
+  /// @brief Get diagnostic statistics for monitoring system health
+  struct DiagnosticStats
+  {
+    size_t staging_count;
+    size_t tracked_count;
+    size_t active_cells;
+    uint64_t frame_counter;
+  };
+
+  [[nodiscard]] DiagnosticStats getDiagnostics() const
+  {
+    return DiagnosticStats{
+      _staging.size(),
+      _last_confirmed_hit.size(),
+      _grid.activeCellsCount(),
+      _frame_counter
+    };
+  }
+
 private:
   VoxelGrid<CellT> _grid;
   Options _options;
@@ -198,6 +225,11 @@ private:
   std::unordered_map<CoordT, uint32_t> _last_confirmed_hit;
   // Voxels waiting for confirmation
   std::unordered_map<CoordT, StagingInfo> _staging;
+
+  // Internal helper methods for robustness
+  void enforceMapSizeLimits();
+  void cleanupOldestStagingEntries(size_t count_to_remove);
+  void cleanupOldestTrackedEntries(size_t count_to_remove);
 
   void updateFreeCells(const Vector3D & origin);
 }; // end class ProbabilisticMap
@@ -239,6 +271,19 @@ inline void RayIterator(const CoordT & key_origin, const CoordT & key_end, const
   CoordT error = {0, 0, 0};
   CoordT coord = key_origin;
   CoordT delta = (key_end - coord);
+
+  // ROBUSTNESS: Check for overflow in delta computation
+  // Prevent extremely long rays that could cause integer overflow
+  constexpr int32_t MAX_DELTA = 100000; // ~100m at 1mm resolution
+  if (std::abs(delta.x) > MAX_DELTA || std::abs(delta.y) > MAX_DELTA || std::abs(delta.z) > MAX_DELTA) {
+    // Ray too long - normalize to maximum length
+    const double scale = static_cast<double>(MAX_DELTA) /
+      std::max({std::abs(delta.x), std::abs(delta.y), std::abs(delta.z)});
+    delta.x = static_cast<int32_t>(delta.x * scale);
+    delta.y = static_cast<int32_t>(delta.y * scale);
+    delta.z = static_cast<int32_t>(delta.z * scale);
+  }
+
   const CoordT step = {delta.x < 0 ? -1 : 1, delta.y < 0 ? -1 : 1, delta.z < 0 ? -1 : 1};
 
   delta = {
@@ -246,6 +291,11 @@ inline void RayIterator(const CoordT & key_origin, const CoordT & key_end, const
     delta.z < 0 ? -delta.z : delta.z};
 
   const int max = std::max(std::max(delta.x, delta.y), delta.z);
+
+  // ROBUSTNESS: Additional safety check for iteration count
+  if (max <= 0 || max > MAX_DELTA) {
+    return;
+  }
 
   // maximum change of any coordinate
   for (int i = 0; i < max - 1; ++i) {
