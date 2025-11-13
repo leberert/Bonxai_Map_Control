@@ -1,0 +1,1 @@
+/home/runner/work/Bonxai_Map_Control/.codeql-scratch/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/test_serialization.dir/link.d CMakeFiles/test_serialization.dir/test_serialization.cpp.o -o test_serialization
