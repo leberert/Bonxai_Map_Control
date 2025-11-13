@@ -4,8 +4,7 @@
 #include "bonxai_map/probabilistic_map.hpp"
 #include "pcl/point_types.h"
 
-int main()
-{
+int main() {
   using namespace Bonxai;
 
   // constants
@@ -20,7 +19,7 @@ int main()
   std::cout << "points bonxai: " << bonxai_ray.size() << std::endl;
 
   std::vector<Point3D> points;
-  for (const auto & ray_coord : bonxai_ray) {
+  for (const auto& ray_coord : bonxai_ray) {
     points.push_back(CoordToPos(ray_coord, voxel_res));
   }
   WritePointsFromPCD("point_to_point.pcd", points);
@@ -29,7 +28,7 @@ int main()
   octomap::OcTree octree(voxel_res);
   octomap::KeyRay ray;
   octree.computeRayKeys(
-    {0, 0, 0}, {(float)test_point.x, (float)test_point.y, (float)test_point.z}, ray);
+      {0, 0, 0}, {(float)test_point.x, (float)test_point.y, (float)test_point.z}, ray);
   std::cout << "points octree: " << ray.size() << std::endl;
 
   return 0;

@@ -4,8 +4,7 @@
 #include <unordered_set>
 #include <array>
 
-namespace Bonxai
-{
+namespace Bonxai {
 
 const int32_t ProbabilisticMap::UnknownProbability = ProbabilisticMap::logods(0.5f);
 
@@ -28,40 +27,34 @@ const std::array<CoordT, ProbabilisticMap::MAX_NEIGHBORS_26> ProbabilisticMap::N
 
 // Thread-local storage definitions for neighbor lookup caches
 thread_local std::vector<CoordT> ProbabilisticMap::_neighbor_coords_cache;
-thread_local std::vector<const ProbabilisticMap::CellT *> ProbabilisticMap::_neighbor_cells_cache;
+thread_local std::vector<const ProbabilisticMap::CellT*> ProbabilisticMap::_neighbor_cells_cache;
 
-VoxelGrid<ProbabilisticMap::CellT> & ProbabilisticMap::grid()
-{
+VoxelGrid<ProbabilisticMap::CellT>& ProbabilisticMap::grid() {
   return _grid;
 }
 
 ProbabilisticMap::ProbabilisticMap(double resolution)
-: _grid(resolution),
-  _accessor(_grid.createAccessor())
-{
+    : _grid(resolution),
+      _accessor(_grid.createAccessor()) {
   // Thread-local caches are initialized automatically when first accessed
 }
 
-const VoxelGrid<ProbabilisticMap::CellT> & ProbabilisticMap::grid() const
-{
+const VoxelGrid<ProbabilisticMap::CellT>& ProbabilisticMap::grid() const {
   return _grid;
 }
 
-const ProbabilisticMap::Options & ProbabilisticMap::options() const
-{
+const ProbabilisticMap::Options& ProbabilisticMap::options() const {
   return _options;
 }
 
-void ProbabilisticMap::setOptions(const Options & options)
-{
+void ProbabilisticMap::setOptions(const Options& options) {
   _options = options;
 }
 
-void ProbabilisticMap::addHitPoint(const Vector3D & point)
-{
+void ProbabilisticMap::addHitPoint(const Vector3D& point) {
   const auto coord = _grid.posToCoord(point);
-  CellT * cell = _accessor.value(coord, true);
-
+  CellT* cell = _accessor.value(coord, true);
+  
   if (!cell) {
     // ROBUSTNESS: Enhanced diagnostic for allocation failures
     static thread_local size_t null_hit_count = 0;
@@ -71,7 +64,7 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
     }
     return; // Skip this point if we can't create/access the cell
   }
-
+  
   // If already updated this cycle, skip (prevents double counting)
   if (cell->update_id == _update_count) {
     return;
@@ -81,8 +74,7 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
 
   // Fast path: immediate integration when temporal filtering effectively disabled.
   if (_options.min_neighbor_support == 0 &&
-    (_options.required_observations <= 1 || _options.window_frames <= 1))
-  {
+      (_options.required_observations <= 1 || _options.window_frames <= 1)) {
     cell->probability_log = std::min(cell->probability_log + _options.prob_hit_log, _options.clamp_max_log);
     cell->update_id = _update_count;
     _hit_coords.push_back(coord);
@@ -121,7 +113,7 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
 #if defined(__GNUG__)
   st.popcnt = static_cast<uint8_t>(__builtin_popcountll(st.mask));
 #else
-  {uint64_t tmp = st.mask; uint8_t c = 0; while (tmp) {tmp &= (tmp - 1); ++c;} st.popcnt = c;}
+  { uint64_t tmp = st.mask; uint8_t c=0; while(tmp){ tmp &= (tmp-1); ++c; } st.popcnt=c; }
 #endif
 
   // Fractional accumulation (optional)
@@ -138,7 +130,7 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
     if (effective_required > 0) {
       st.pending_log = std::min(
         st.pending_log + (_options.prob_hit_log / effective_required),
-        _options.prob_hit_log * 4);   // clamp fractional accumulation to avoid runaway (heuristic)
+        _options.prob_hit_log* 4);   // clamp fractional accumulation to avoid runaway (heuristic)
     }
   }
 
@@ -187,7 +179,7 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
     }
 
     // ROBUSTNESS: Pre-compute all 6-connectivity neighbor coordinates with overflow protection
-    for (const auto & d : NEIGHBOR_DIRS_6) {
+    for (const auto& d : NEIGHBOR_DIRS_6) {
       // Check for coordinate overflow before addition
       if (std::abs(coord.x) < 1000000 && std::abs(coord.y) < 1000000 && std::abs(coord.z) < 1000000) {
         _neighbor_coords_cache.push_back(coord + d);
@@ -195,14 +187,14 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
     }
 
     // OPTIMIZATION: Batch lookup neighbor cells to reduce hash map overhead
-    for (const auto & ncoord : _neighbor_coords_cache) {
+    for (const auto& ncoord : _neighbor_coords_cache) {
       _neighbor_cells_cache.push_back(_accessor.value(ncoord, false));
     }
 
     // Process neighbor cells and staging in single optimized pass
     for (size_t i = 0; i < _neighbor_coords_cache.size(); ++i) {
-      const auto & ncoord = _neighbor_coords_cache[i];
-      const auto * ncell = _neighbor_cells_cache[i];
+      const auto& ncoord = _neighbor_coords_cache[i];
+      const auto* ncell = _neighbor_cells_cache[i];
 
       if (ncell) {
         if (ncell->probability_log > _options.occupancy_threshold_log) {
@@ -218,7 +210,7 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
         }
       }
     }
-
+    
     // For potentially isolated noise points (especially elevated ones), apply stricter criteria
     if (is_elevated && support == 0 && staging_support == 0) {
       // OPTIMIZATION: For elevated isolated points, check extended 26-connectivity neighborhood
@@ -232,7 +224,7 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
       _neighbor_cells_cache.reserve(NEIGHBOR_DIRS_26.size());
 
       // ROBUSTNESS: Pre-compute all 26-connectivity neighbor coordinates with overflow protection
-      for (const auto & d : NEIGHBOR_DIRS_26) {
+      for (const auto& d : NEIGHBOR_DIRS_26) {
         // Check for coordinate overflow before addition
         if (std::abs(coord.x) < 1000000 && std::abs(coord.y) < 1000000 && std::abs(coord.z) < 1000000) {
           _neighbor_coords_cache.push_back(coord + d);
@@ -240,14 +232,14 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
       }
 
       // OPTIMIZATION: Batch lookup all neighbor cells using member accessor
-      for (const auto & ncoord : _neighbor_coords_cache) {
+      for (const auto& ncoord : _neighbor_coords_cache) {
         _neighbor_cells_cache.push_back(_accessor.value(ncoord, false));
       }
 
       // Process all neighbors in single optimized pass
       for (size_t i = 0; i < _neighbor_coords_cache.size(); ++i) {
-        const auto & ncoord = _neighbor_coords_cache[i];
-        const auto * ncell = _neighbor_cells_cache[i];
+        const auto& ncoord = _neighbor_coords_cache[i];
+        const auto* ncell = _neighbor_cells_cache[i];
 
         if (ncell) {
           if (ncell->probability_log > _options.occupancy_threshold_log) {
@@ -263,15 +255,14 @@ void ProbabilisticMap::addHitPoint(const Vector3D & point)
           }
         }
       }
-
+      
       // Require at least 2 extended neighbors for elevated isolated points
-      spatial_ok =
-        (extended_support + extended_staging >= std::max(2u, static_cast<unsigned>(_options.min_neighbor_support)));
+      spatial_ok = (extended_support + extended_staging >= std::max(2u, static_cast<unsigned>(_options.min_neighbor_support)));
     } else {
       // Standard spatial support check
       spatial_ok = (support + staging_support >= _options.min_neighbor_support);
     }
-
+    
     st.neighbor_support = support + staging_support;
   }
 
@@ -323,10 +314,9 @@ skip_spatial_check:
   }
 }
 
-void ProbabilisticMap::addMissPoint(const Vector3D & point)
-{
+void ProbabilisticMap::addMissPoint(const Vector3D& point) {
   const auto coord = _grid.posToCoord(point);
-  CellT * cell = _accessor.value(coord, true);
+  CellT* cell = _accessor.value(coord, true);
 
   if (!cell) {
     // ROBUSTNESS: Enhanced diagnostic logging for null pointer cases
@@ -341,61 +331,58 @@ void ProbabilisticMap::addMissPoint(const Vector3D & point)
 
   if (cell->update_id != _update_count) {
     cell->probability_log =
-      std::max(cell->probability_log + _options.prob_miss_log, _options.clamp_min_log);
+        std::max(cell->probability_log + _options.prob_miss_log, _options.clamp_min_log);
 
     cell->update_id = _update_count;
     _miss_coords.push_back(coord);
   }
 }
 
-bool ProbabilisticMap::isOccupied(const CoordT & coord) const
-{
-  if (auto * cell = _accessor.value(coord, false)) {
+bool ProbabilisticMap::isOccupied(const CoordT& coord) const {
+  if (auto* cell = _accessor.value(coord, false)) {
     return cell->probability_log > _options.occupancy_threshold_log;
   }
   return false;
 }
 
-bool ProbabilisticMap::isUnknown(const CoordT & coord) const
-{
-  if (auto * cell = _accessor.value(coord, false)) {
+bool ProbabilisticMap::isUnknown(const CoordT& coord) const {
+  if (auto* cell = _accessor.value(coord, false)) {
     return cell->probability_log == _options.occupancy_threshold_log;
   }
   return true;
 }
 
-bool ProbabilisticMap::isFree(const CoordT & coord) const
-{
-  if (auto * cell = _accessor.value(coord, false)) {
+bool ProbabilisticMap::isFree(const CoordT& coord) const {
+  if (auto* cell = _accessor.value(coord, false)) {
     return cell->probability_log < _options.occupancy_threshold_log;
   }
   return false;
 }
 
-void ProbabilisticMap::updateFreeCells(const Vector3D & origin)
+void ProbabilisticMap::updateFreeCells(const Vector3D& origin)
 {
   // OPTIMIZATION: Reuse member accessor instead of creating new one (expensive!)
   // This avoids the costly createAccessor() call every frame
 
   // same as addMissPoint, but using lambda will force inlining
-  auto clearPoint = [this](const CoordT & coord) {
-      CellT * cell = _accessor.value(coord, true);
+  auto clearPoint = [this](const CoordT& coord) {
+      CellT* cell = _accessor.value(coord, true);
       if (cell->update_id != _update_count) {
         cell->probability_log =
           std::max(cell->probability_log + _options.prob_miss_log, _options.clamp_min_log);
-        cell->update_id = _update_count;
-      }
-      return true;
-    };
+      cell->update_id = _update_count;
+    }
+    return true;
+  };
 
   const auto coord_origin = _grid.posToCoord(origin);
 
-  for (const auto & coord_end : _hit_coords) {
+  for (const auto& coord_end : _hit_coords) {
     RayIterator(coord_origin, coord_end, clearPoint);
   }
   _hit_coords.clear();
 
-  for (const auto & coord_end : _miss_coords) {
+  for (const auto& coord_end : _miss_coords) {
     RayIterator(coord_origin, coord_end, clearPoint);
   }
   _miss_coords.clear();
@@ -403,7 +390,7 @@ void ProbabilisticMap::updateFreeCells(const Vector3D & origin)
   if (++_update_count == 4) {
     _update_count = 1;
   }
-  // OPTIMIZED: staging timeout & stale cleanup - batch processing
+  // OPTIMIZED: staging timeout& stale cleanup - batch processing
   if (!_staging.empty() && _options.stale_frames > 0) {
     // Only perform cleanup every 5 frames to reduce overhead
     if (_frame_counter % 5 == 0) {
@@ -432,10 +419,10 @@ void ProbabilisticMap::updateFreeCells(const Vector3D & origin)
 
   // Enhanced deoccupy decay with isolated noise point removal
   if (!_last_confirmed_hit.empty()) {
-    const uint64_t decay_limit = (_options.deoccupy_frames > 0 && _frame_counter > _options.deoccupy_frames) ?
-      (_frame_counter - _options.deoccupy_frames) : 0;
-
-    for (auto it = _last_confirmed_hit.begin(); it != _last_confirmed_hit.end(); ) {
+    const uint64_t decay_limit = (_options.deoccupy_frames > 0 && _frame_counter > _options.deoccupy_frames) ? 
+                                 (_frame_counter - _options.deoccupy_frames) : 0;
+    
+    for (auto it = _last_confirmed_hit.begin(); it != _last_confirmed_hit.end();) {
       bool should_decay = (_options.deoccupy_frames > 0 && it->second < decay_limit);
 
       // OPTIMIZED: Additional check - isolated elevated points get more aggressive decay
@@ -453,9 +440,9 @@ void ProbabilisticMap::updateFreeCells(const Vector3D & origin)
             // OPTIMIZATION: Check if it's still isolated using pre-computed neighbor directions
             uint8_t neighbor_count = 0;
 
-            for (const auto & d : NEIGHBOR_DIRS_6) {
+            for (const auto& d : NEIGHBOR_DIRS_6) {
               const CoordT ncoord = coord + d;
-              if (auto * ncell = _accessor.value(ncoord, false)) {
+              if (auto* ncell = _accessor.value(ncoord, false)) {
                 if (ncell->probability_log > _options.occupancy_threshold_log) {
                   neighbor_count++;
                 }
@@ -469,9 +456,9 @@ void ProbabilisticMap::updateFreeCells(const Vector3D & origin)
           }
         }
       }
-
+      
       if (should_decay) {
-        if (auto * cell = _accessor.value(it->first, false)) {
+        if (auto* cell = _accessor.value(it->first, false)) {
           cell->probability_log = std::max(cell->probability_log + _options.prob_miss_log, _options.clamp_min_log);
           // If it drops below occupancy threshold we can remove tracking
           if (cell->probability_log <= _options.occupancy_threshold_log) {
@@ -524,25 +511,23 @@ void ProbabilisticMap::updateFreeCells(const Vector3D & origin)
   enforceMapSizeLimits();
 }
 
-void ProbabilisticMap::getOccupiedVoxels(std::vector<CoordT> & coords)
-{
+void ProbabilisticMap::getOccupiedVoxels(std::vector<CoordT>& coords) {
   coords.clear();
-  auto visitor = [&](CellT & cell, const CoordT & coord) {
-      if (cell.probability_log > _options.occupancy_threshold_log) {
-        coords.push_back(coord);
-      }
-    };
+  auto visitor = [&](CellT& cell, const CoordT& coord) {
+    if (cell.probability_log > _options.occupancy_threshold_log) {
+      coords.push_back(coord);
+    }
+  };
   _grid.forEachCell(visitor);
 }
 
-void ProbabilisticMap::getFreeVoxels(std::vector<CoordT> & coords)
-{
+void ProbabilisticMap::getFreeVoxels(std::vector<CoordT>& coords) {
   coords.clear();
-  auto visitor = [&](CellT & cell, const CoordT & coord) {
-      if (cell.probability_log < _options.occupancy_threshold_log) {
-        coords.push_back(coord);
-      }
-    };
+  auto visitor = [&](CellT& cell, const CoordT& coord) {
+    if (cell.probability_log < _options.occupancy_threshold_log) {
+      coords.push_back(coord);
+    }
+  };
   _grid.forEachCell(visitor);
 }
 

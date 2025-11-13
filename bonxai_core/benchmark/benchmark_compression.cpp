@@ -10,8 +10,7 @@ using namespace Bonxai;
 
 static const double COMPRESSION_RES = 0.0025;
 
-static void Bonxai_Compress(benchmark::State & state)
-{
+static void Bonxai_Compress(benchmark::State& state) {
   auto cloud = ReadCloud<pcl::PointXYZRGB>("table_scene_mug_rgb.pcd");
 
   std::vector<char> compressed_data;
@@ -20,10 +19,10 @@ static void Bonxai_Compress(benchmark::State & state)
     VoxelGrid<uint16_t> grid(COMPRESSION_RES);
     auto accessor = grid.createAccessor();
 
-    for (const auto & point : *cloud) {
+    for (const auto& point : *cloud) {
       auto coord = grid.posToCoord(point.x, point.y, point.z);
       uint16_t col =
-        uint16_t(point.r >> 3) | (uint16_t(point.g >> 2) << 5) | (uint16_t(point.b >> 3) << 11);
+          uint16_t(point.r >> 3) | (uint16_t(point.g >> 2) << 5) | (uint16_t(point.b >> 3) << 11);
       accessor.setValue(coord, col);
     }
 
@@ -38,14 +37,13 @@ static void Bonxai_Compress(benchmark::State & state)
   }
 }
 
-static void PCL_Compress(benchmark::State & state)
-{
+static void PCL_Compress(benchmark::State& state) {
   auto cloud = ReadCloud<pcl::PointXYZRGB>("table_scene_mug_rgb.pcd");
 
   for (auto _ : state) {
     std::stringstream compressedData;
     pcl::io::OctreePointCloudCompression<pcl::PointXYZRGB> encoder(
-      pcl::io::MANUAL_CONFIGURATION, false, COMPRESSION_RES, COMPRESSION_RES, true, 20, true, 6);
+        pcl::io::MANUAL_CONFIGURATION, false, COMPRESSION_RES, COMPRESSION_RES, true, 20, true, 6);
 
     encoder.encodePointCloud(cloud, compressedData);
   }
